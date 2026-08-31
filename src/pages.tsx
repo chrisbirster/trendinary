@@ -156,10 +156,15 @@ export function TrendPage() {
   const params = useParams();
   const [trend, setTrend] = createSignal<Trend>();
   const [error, setError] = createSignal<string>();
+  const slug = params.slug;
 
-  void fetchTrend(params.slug)
-    .then((value) => setTrend(value))
-    .catch((reason) => setError(message(reason)));
+  if (slug) {
+    void fetchTrend(slug)
+      .then((value) => setTrend(value))
+      .catch((reason) => setError(message(reason)));
+  } else {
+    setError("Missing trend slug.");
+  }
 
   return (
     <>
