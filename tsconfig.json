@@ -10,5 +10,5 @@
     "resolveJsonModule": true,
     "types": ["vite/client", "@solidjs/vite-plugin/boundary-modules"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }
