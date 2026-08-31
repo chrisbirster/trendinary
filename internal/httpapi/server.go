@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chrisbirster/trendinary/internal/engine"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	"github.com/chrisbirster/trendinary/internal/signals"
@@ -35,6 +36,7 @@ func New(s *store.Memory, frontend http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/v1/signals/bluesky", server.blueskySignals)
 	mux.HandleFunc("GET /api/v1/sources/{domain}", server.source)
 	mux.HandleFunc("GET /api/v1/methodology/bias", server.biasMethodology)
+	mux.HandleFunc("GET /api/v1/methodology/score", server.scoreMethodology)
 	mux.Handle("/", frontend)
 	return withHeaders(mux)
 }
@@ -130,6 +132,25 @@ func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 				"Keep source leaning separate from the stance or claims of an individual article.",
 			},
 			"initial_provider": "AllSides",
+		},
+	})
+}
+
+func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"version": engine.ScoreVersion,
+			"range":   "0-100",
+			"principle": "Score unexpected attention, not fame. Metrics are normalized against historical baselines before entering the scoring function.",
+			"weights": map[string]float64{
+				"attention":         0.20,
+				"velocity":          0.30,
+				"source_breadth":    0.18,
+				"community_breadth": 0.12,
+				"novelty":           0.12,
+				"confidence":        0.08,
+			},
+			"warning": "Version 0.1 is an explicit starting model. Thresholds will be calibrated against stored historical outcomes rather than optimized for engagement.",
 		},
 	})
 }
