@@ -34,6 +34,13 @@ func TestSignalAndSnapshotHistory(t *testing.T) {
 	observed := time.Date(2026, 8, 30, 21, 0, 0, 0, time.UTC)
 	if err := store.RecordSnapshot(ctx, history.Snapshot{
 		TrendKey: "at-protocol", ObservedAt: observed, Lifecycle: "RISING", Score: score,
+		Raw: history.RawMetrics{SignalCount: 3, SourceCount: 2, CommunityCount: 3, RawAttention: 100, RawEngagement: 77},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSnapshot(ctx, history.Snapshot{
+		TrendKey: "at-protocol", ObservedAt: observed.Add(time.Hour), Lifecycle: "BREAKING", Score: score,
+		Raw: history.RawMetrics{SignalCount: 5, SourceCount: 2, CommunityCount: 5, RawAttention: 200, RawEngagement: 140},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -42,13 +49,24 @@ func TestSignalAndSnapshotHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshots) != 1 {
-		t.Fatalf("snapshots = %d, want 1", len(snapshots))
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want 2", len(snapshots))
 	}
-	if snapshots[0].Score.Score != score.Score || snapshots[0].Lifecycle != "RISING" {
-		t.Fatalf("unexpected snapshot: %+v", snapshots[0])
+	if snapshots[0].Raw.RawAttention != 200 || snapshots[0].Lifecycle != "BREAKING" {
+		t.Fatalf("unexpected newest snapshot: %+v", snapshots[0])
 	}
-	if !snapshots[0].ObservedAt.Equal(observed) {
-		t.Fatalf("observed_at = %s, want %s", snapshots[0].ObservedAt, observed)
+
+	baseline, err := store.Baseline(ctx, "at-protocol", observed.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Observations != 2 {
+		t.Fatalf("observations = %d, want 2", baseline.Observations)
+	}
+	if baseline.AverageAttention != 150 {
+		t.Fatalf("average attention = %f, want 150", baseline.AverageAttention)
+	}
+	if baseline.Latest == nil || baseline.Latest.Raw.RawAttention != 200 {
+		t.Fatalf("unexpected latest baseline snapshot: %+v", baseline.Latest)
 	}
 }
