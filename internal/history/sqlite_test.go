@@ -70,3 +70,37 @@ func TestSignalAndSnapshotHistory(t *testing.T) {
 		t.Fatalf("unexpected latest baseline snapshot: %+v", baseline.Latest)
 	}
 }
+
+func TestStreamCursorRoundTrip(t *testing.T) {
+	store, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if cursor, ok, err := store.Cursor(ctx, "atproto-jetstream"); err != nil {
+		t.Fatal(err)
+	} else if ok || cursor != 0 {
+		t.Fatalf("unexpected initial cursor: %d %t", cursor, ok)
+	}
+
+	if err := store.SaveCursor(ctx, "atproto-jetstream", 123456); err != nil {
+		t.Fatal(err)
+	}
+	cursor, ok, err := store.Cursor(ctx, "atproto-jetstream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || cursor != 123456 {
+		t.Fatalf("cursor = %d, ok = %t", cursor, ok)
+	}
+
+	if err := store.SaveCursor(ctx, "atproto-jetstream", 123999); err != nil {
+		t.Fatal(err)
+	}
+	cursor, ok, err = store.Cursor(ctx, "atproto-jetstream")
+	if err != nil || !ok || cursor != 123999 {
+		t.Fatalf("updated cursor = %d, ok = %t, err = %v", cursor, ok, err)
+	}
+}
