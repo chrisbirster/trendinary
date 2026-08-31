@@ -117,17 +117,18 @@ func TestNormalizePostUsesStableATURIIdentity(t *testing.T) {
 }
 
 func testPostEvent(seq uint64, operation bskyjetstream.Operation, text string) bskyjetstream.Event {
+	eventAt := time.Now().UTC().Add(time.Duration(seq) * time.Millisecond)
 	record := map[string]any(nil)
 	if operation != bskyjetstream.OpDelete {
 		record = map[string]any{
 			"text": text,
-			"createdAt": "2026-08-31T12:00:00Z",
+			"createdAt": eventAt.Format(time.RFC3339Nano),
 		}
 	}
 	return bskyjetstream.Event{
 		DID: "did:plc:alice",
 		Seq: seq,
-		TimeUS: time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC).Add(time.Duration(seq)*time.Second).UnixMicro(),
+		TimeUS: eventAt.UnixMicro(),
 		Kind: bskyjetstream.KindCommit,
 		Commit: &bskyjetstream.Commit{
 			Operation: operation,
