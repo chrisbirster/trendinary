@@ -33,26 +33,35 @@ type Source struct {
 	Bias   *BiasAssessment `json:"bias,omitempty"`
 }
 
-type Engagement struct {
-	Score    int `json:"score,omitempty"`
-	Replies  int `json:"replies,omitempty"`
-	Likes    int `json:"likes,omitempty"`
-	Reposts  int `json:"reposts,omitempty"`
-	Quotes   int `json:"quotes,omitempty"`
+type ActorProfile struct {
+	DID         string `json:"did,omitempty"`
+	Handle      string `json:"handle,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Avatar      string `json:"avatar,omitempty"`
 }
 
-// Signal is Trendinary's source-independent observation shape. Adapters may
-// retain richer source-specific fields internally, but clustering and scoring
-// consume this common representation.
+type Engagement struct {
+	Score   int `json:"score,omitempty"`
+	Replies int `json:"replies,omitempty"`
+	Likes   int `json:"likes,omitempty"`
+	Reposts int `json:"reposts,omitempty"`
+	Quotes  int `json:"quotes,omitempty"`
+}
+
+// Signal is Trendinary's source-independent observation shape. AuthorID is the
+// stable source-native identity (for example an AT Protocol DID) while Author
+// is the human-readable handle/name when one is known.
 type Signal struct {
-	ID          string     `json:"id"`
-	Source      Source     `json:"source"`
-	Title       string     `json:"title,omitempty"`
-	Text        string     `json:"text,omitempty"`
-	URL         string     `json:"url,omitempty"`
-	Author      string     `json:"author,omitempty"`
-	PublishedAt string     `json:"published_at,omitempty"`
-	Engagement  Engagement `json:"engagement,omitempty"`
+	ID          string        `json:"id"`
+	Source      Source        `json:"source"`
+	Title       string        `json:"title,omitempty"`
+	Text        string        `json:"text,omitempty"`
+	URL         string        `json:"url,omitempty"`
+	Author      string        `json:"author,omitempty"`
+	AuthorID    string        `json:"author_id,omitempty"`
+	Actor       *ActorProfile `json:"actor,omitempty"`
+	PublishedAt string        `json:"published_at,omitempty"`
+	Engagement  Engagement    `json:"engagement,omitempty"`
 }
 
 type TimelineEvent struct {
@@ -61,20 +70,64 @@ type TimelineEvent struct {
 	Text  string `json:"text"`
 }
 
-type Trend struct {
-	Slug     string `json:"slug"`
-	Rank     int    `json:"rank"`
-	Name     string `json:"name"`
-	Category string `json:"category"`
-	Score    int    `json:"score"`
-	Change   string `json:"change"`
-	Status   string `json:"status"`
-	Reason   string `json:"reason"`
-	Started  string `json:"started"`
-	Vibe     string `json:"vibe"`
+type PropagationHop struct {
+	Source      Source `json:"source"`
+	FirstSeen   string `json:"first_seen"`
+	LastSeen    string `json:"last_seen"`
+	SignalCount int    `json:"signal_count"`
+	Engagement  int    `json:"engagement"`
+}
 
-	Sources  []Source        `json:"sources"`
-	Timeline []TimelineEvent `json:"timeline,omitempty"`
-	Lore     string          `json:"lore,omitempty"`
-	Why      string          `json:"why,omitempty"`
+type PerspectiveMix struct {
+	RatedSources int `json:"rated_sources"`
+	TotalSources int `json:"total_sources"`
+	Left         int `json:"left"`
+	LeanLeft     int `json:"lean_left"`
+	Center       int `json:"center"`
+	LeanRight    int `json:"lean_right"`
+	Right        int `json:"right"`
+	Mixed        int `json:"mixed"`
+	Unrated      int `json:"unrated"`
+	Note         string `json:"note"`
+}
+
+type Evidence struct {
+	Source      Source `json:"source"`
+	Title       string `json:"title"`
+	URL         string `json:"url,omitempty"`
+	Author      string `json:"author,omitempty"`
+	PublishedAt string `json:"published_at,omitempty"`
+}
+
+type Explanation struct {
+	Summary     string     `json:"summary"`
+	WhatChanged string     `json:"what_changed"`
+	Lore        string     `json:"lore"`
+	Confidence  string     `json:"confidence"`
+	Mode        string     `json:"mode"`
+	Evidence    []Evidence `json:"evidence"`
+}
+
+type Trend struct {
+	ID       string   `json:"id,omitempty"`
+	Slug     string   `json:"slug"`
+	Aliases  []string `json:"aliases,omitempty"`
+	Rank     int      `json:"rank"`
+	Name     string   `json:"name"`
+	Category string   `json:"category"`
+	Score    int      `json:"score"`
+	Change   string   `json:"change"`
+	Status   string   `json:"status"`
+	Reason   string   `json:"reason"`
+	Started  string   `json:"started"`
+	Vibe     string   `json:"vibe"`
+
+	Sources      []Source         `json:"sources"`
+	Timeline     []TimelineEvent  `json:"timeline,omitempty"`
+	TopVoices    []ActorProfile   `json:"top_voices,omitempty"`
+	Propagation  []PropagationHop `json:"propagation,omitempty"`
+	Perspective  PerspectiveMix   `json:"perspective"`
+	Explanation  *Explanation     `json:"explanation,omitempty"`
+	Lore         string           `json:"lore,omitempty"`
+	Why          string           `json:"why,omitempty"`
 }
