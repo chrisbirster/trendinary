@@ -20,8 +20,6 @@ const (
 	minStreamOnlyAuthors          = 2
 )
 
-// DiscoverySource lets additional networks join the same scanner without
-// making Hacker News, Reddit, GitHub, or future adapters special cases.
 type DiscoverySource interface {
 	Name() string
 	Discover(context.Context) ([]model.Signal, error)
@@ -39,9 +37,6 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 	return s.RunWithSources(ctx, live, nil)
 }
 
-// RunWithSources treats the bounded streaming window and each configured
-// adapter as peer discovery sources. A scan only fails when no discovery signal
-// remains at all; an individual network outage becomes a warning.
 func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra []DiscoverySource) (Result, error) {
 	if s.history == nil || s.memory == nil {
 		return Result{}, fmt.Errorf("scanner dependencies are incomplete")
@@ -102,14 +97,8 @@ func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra 
 	if len(seedClusters) > maxCandidateClusters {
 		seedClusters = seedClusters[:maxCandidateClusters]
 	}
-
 	if len(seedClusters) == 0 {
-		return Result{
-			Signals:  len(discovery),
-			Clusters: 0,
-			Trends:   0,
-			Warnings: append(warnings, "no clusters met the trend candidate gate"),
-		}, nil
+		return Result{Signals: len(discovery), Clusters: 0, Trends: 0, Warnings: append(warnings, "no clusters met the trend candidate gate")}, nil
 	}
 
 	enriched := make([]engine.Cluster, len(seedClusters))
@@ -157,13 +146,7 @@ func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra 
 	now := s.now().UTC()
 	trends := make([]model.Trend, 0, len(enriched))
 	for _, currentCluster := range enriched {
-		entity, identityErr := s.history.ResolveEntity(
-			ctx,
-			clusterName(currentCluster),
-			currentCluster.Key,
-			engine.CanonicalTerms(currentCluster.Signals, 8),
-			now,
-		)
+		entity, identityErr := s.history.ResolveEntity(ctx, clusterName(currentCluster), currentCluster.Key, engine.CanonicalTerms(currentCluster.Signals, 8), now)
 		if identityErr != nil {
 			warnings = append(warnings, fmt.Sprintf("identity %s: %v", currentCluster.Key, identityErr))
 			continue
@@ -180,6 +163,9 @@ func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra 
 		trend.Slug = entity.Slug
 		trend.Aliases = entity.Aliases
 		trend.Name = clusterName(currentCluster)
+		if err := s.decorateTrend(ctx, &trend, entity, currentCluster, now); err != nil {
+			warnings = append(warnings, fmt.Sprintf("decorate %s: %v", entity.ID, err))
+		}
 		if err := s.history.RecordSnapshot(ctx, snapshot); err != nil {
 			warnings = append(warnings, fmt.Sprintf("snapshot %s: %v", entity.ID, err))
 			continue
@@ -201,12 +187,7 @@ func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra 
 	}
 	s.memory.ReplaceTrends(trends)
 
-	return Result{
-		Signals:  len(allSignals),
-		Clusters: len(enriched),
-		Trends:   len(trends),
-		Warnings: warnings,
-	}, nil
+	return Result{Signals: len(allSignals), Clusters: len(enriched), Trends: len(trends), Warnings: warnings}, nil
 }
 
 func (s *Scanner) hydrateBlueskyCandidate(ctx context.Context, cluster *engine.Cluster) error {
@@ -257,9 +238,6 @@ func (s *Scanner) enrichBlueskyProfiles(ctx context.Context, cluster *engine.Clu
 		}
 	}
 	profiles := profiler.Profiles(ctx, actors)
-	if len(profiles) == 0 {
-		return
-	}
 	for index := range cluster.Signals {
 		signal := &cluster.Signals[index]
 		profile, ok := profiles[signal.AuthorID]
@@ -270,12 +248,7 @@ func (s *Scanner) enrichBlueskyProfiles(ctx context.Context, cluster *engine.Clu
 		if signal.Author == "" {
 			signal.Author = profile.DID
 		}
-		signal.Actor = &model.ActorProfile{
-			DID:         profile.DID,
-			Handle:      profile.Handle,
-			DisplayName: profile.DisplayName,
-			Avatar:      profile.Avatar,
-		}
+		signal.Actor = &model.ActorProfile{DID: profile.DID, Handle: profile.Handle, DisplayName: profile.DisplayName, Avatar: profile.Avatar}
 	}
 }
 
