@@ -2,7 +2,7 @@
 
 ## Runtime shape
 
-Trendinary ships as one Go binary.
+Trendinary ships as one Go binary behind a thin Cloudflare edge.
 
 ```text
 Browser
@@ -14,9 +14,20 @@ Cloudflare DNS + Worker edge (SST)
 Fly.io
   |
   v
-Go HTTP server
-  |-- /api/v1/*       versioned JSON API
-  `-- /*              embedded Vite/Solid 2 SPA
+Go process
+  |-- HTTP/API server
+  |-- periodic trend scanner
+  `-- continuous ATProto Jetstream collector
+       |
+       +--> bounded recent-signal window
+       `--> SQLite on Fly volume
+```
+
+The HTTP server exposes:
+
+```text
+/api/v1/*   versioned JSON API
+/*          embedded Vite/Solid 2 SPA
 ```
 
 Vite builds the Solid 2 application into `internal/web/dist`. Go's `embed` package packages that directory into the production binary. Solid Router owns client-side navigation; the Go static handler falls back to `index.html` for non-API routes.
@@ -37,6 +48,8 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8080`.
 
+Set `TRENDINARY_JETSTREAM_DISABLED=1` when local development should not connect to the live AT Protocol stream.
+
 ## Production build
 
 ```bash
@@ -44,63 +57,93 @@ npm run build:web
 npm run build:server
 ```
 
-The Dockerfile performs the same sequence in separate Node and Go build stages and emits a small production image.
+The Dockerfile performs the same sequence in separate Node and Go build stages and emits the Fly production image. Go module lock files are verified by CI before the application build.
 
 ## Public edge
 
-SST owns the Cloudflare Worker and the `trendinary.com` custom domain. The worker currently behaves as a deliberately thin reverse proxy to `https://trendinary.fly.dev`.
+SST owns the Cloudflare Worker and the `trendinary.com` custom domain. The worker is intentionally a thin reverse proxy to `https://trendinary.fly.dev`.
 
-The edge is the future home for concerns that belong before the Go application:
+The edge owns concerns that belong before the Go application:
 
-- immutable asset caching
-- rate limiting
-- bot / abuse controls
-- request normalization
-- coarse API caching where freshness rules permit it
-- edge observability
+- immutable asset caching;
+- rate limiting;
+- bot / abuse controls;
+- request normalization;
+- coarse API caching where freshness rules permit it;
+- edge observability.
 
-Business logic, trend scoring, clustering, source analysis, and the public API stay in Go.
+Cloudflare KV is reserved for durable edge metadata/configuration rather than sub-minute trend state. R2 is the long-lived raw/provenance archive target. Business logic, trend scoring, clustering, source analysis, and the public API stay in Go.
 
 ## API contract
 
-The first API namespace is `/api/v1`.
+The current API namespace is `/api/v1`.
 
-Current routes:
+Important routes include:
 
 - `GET /api/v1/healthz`
 - `GET /api/v1/trends`
 - `GET /api/v1/trends/:slug`
+- `GET /api/v1/trends/:slug/history`
 - `GET /api/v1/sources/:domain`
+- `GET /api/v1/methodology/score`
 - `GET /api/v1/methodology/bias`
 
-The API is intentionally versioned before live ingestion begins so the Solid app, future native clients, and third-party consumers can evolve independently.
+The API is versioned so the Solid app, future native clients, and third-party consumers can evolve independently.
 
-## Data pipeline target
+## Discovery and scoring pipeline
 
 ```text
-Source adapters
-    |
-    v
-Raw signals ---> raw archive
-    |
-    v
-Normalization / entity extraction
-    |
-    v
-Cluster engine
-    |
-    v
-Trend snapshots + baselines
-    |
-    +--> Trendinary Score / lifecycle
-    +--> WTF? grounded explanation
-    +--> LORE durable context
-    +--> VIBE conversation shape
-    `--> FOMO / alerts / Following
+Hacker News polling -----------+
+                               |
+ATProto Jetstream v2 ----------+--> normalized signals
+  app.bsky.feed.post commits    |        |
+                               |        v
+                               |   bounded recent window
+                               |        |
+                               +--------+
+                                        v
+                                  cluster engine
+                                        |
+                          Bluesky search enrichment
+                                        |
+                                        v
+                             historical SQLite baseline
+                                        |
+                                        v
+                          Trendinary Score + lifecycle
+                                        |
+               +------------------------+----------------------+
+               |                        |                      |
+               v                        v                      v
+             NOW                      PEEP                 trend history
 ```
 
-The first live adapters should be Hacker News and AT Protocol because both expose clean public APIs and are highly relevant to Trendinary's early tech/internet audience.
+Hacker News and Jetstream are peers at discovery time. Either may produce a trend independently. Bluesky search remains useful as a targeted enrichment layer for top candidate clusters.
+
+## AT Protocol stream correctness
+
+Jetstream v2 is filtered to `app.bsky.feed.post` commit events. Creates, updates, and deletes are folded into durable signal state and the bounded recent window.
+
+For every event batch:
+
+1. persist signal creates/updates/deletes;
+2. update the bounded in-memory working window;
+3. persist `Batch.LastCursor()`.
+
+Only advancing the cursor after state succeeds makes replay idempotent and avoids gaps after process crashes. A saved cursor reconnects through Jetstream archive replay and then cuts over to the live tail.
+
+See `docs/jetstream.md` for operational details.
 
 ## Persistence
 
-The current branch uses an in-memory store so the HTTP/API boundary can stabilize first. Persistent storage is the next backend milestone. Raw source events, normalized signals, trend snapshots, users/follows, generated explanations, and provenance must be stored separately enough that any public explanation can be traced back to evidence.
+SQLite is the operational source of truth on the Fly volume at `/data/trendinary.db` in production. It currently stores:
+
+- normalized source signals;
+- trend snapshots;
+- raw observation metrics used for baseline recalibration;
+- score-model version and normalized score inputs;
+- durable stream cursors.
+
+SQLite runs in WAL mode with a single application writer. The in-memory recent-signal store is deliberately bounded and disposable; it exists only to make current-window clustering cheap.
+
+R2 remains the target for raw source payloads, provenance/replay fixtures, exports, and SQLite backups. User/follow/account storage can be introduced separately as those product features land.
