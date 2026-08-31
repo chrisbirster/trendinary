@@ -14,8 +14,10 @@ import (
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/httpapi"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
+	githubdiscovery "github.com/chrisbirster/trendinary/internal/ingest/github"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	jetstreaming "github.com/chrisbirster/trendinary/internal/ingest/jetstream"
+	"github.com/chrisbirster/trendinary/internal/ingest/reddit"
 	"github.com/chrisbirster/trendinary/internal/recent"
 	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 	"github.com/chrisbirster/trendinary/internal/scanner"
@@ -52,6 +54,30 @@ func main() {
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
 		},
 	)
+
+	discoverySources := make([]scanner.DiscoverySource, 0, 2)
+	if os.Getenv("TRENDINARY_GITHUB_DISABLED") != "1" {
+		discoverySources = append(discoverySources, githubdiscovery.New(
+			nil,
+			os.Getenv("TRENDINARY_GITHUB_TOKEN"),
+			envInt("TRENDINARY_GITHUB_LIMIT", 40),
+		))
+	}
+	if os.Getenv("TRENDINARY_REDDIT_DISABLED") != "1" {
+		clientID := stringsTrim(os.Getenv("TRENDINARY_REDDIT_CLIENT_ID"))
+		clientSecret := stringsTrim(os.Getenv("TRENDINARY_REDDIT_CLIENT_SECRET"))
+		if clientID != "" && clientSecret != "" {
+			discoverySources = append(discoverySources, reddit.New(
+				nil,
+				clientID,
+				clientSecret,
+				envString("TRENDINARY_REDDIT_USER_AGENT", "trendinary/0.1 (+https://trendinary.com)"),
+				envInt("TRENDINARY_REDDIT_LIMIT", 50),
+			))
+		} else {
+			slog.Info("reddit discovery disabled because OAuth credentials are not configured")
+		}
+	}
 
 	jetstreamEnabled := os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1"
 	scannerEnabled := os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1"
@@ -90,7 +116,7 @@ func main() {
 
 	if scannerEnabled {
 		interval := envDuration("TRENDINARY_SCAN_INTERVAL", 2*time.Minute)
-		go runScanner(ctx, scan, streamWindow, interval, runtimeStatus)
+		go runScanner(ctx, scan, streamWindow, discoverySources, interval, runtimeStatus)
 	}
 
 	go func() {
@@ -102,7 +128,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("trendinary listening", "addr", server.Addr, "db", dbPath)
+	slog.Info("trendinary listening", "addr", server.Addr, "db", dbPath, "discovery_sources", len(discoverySources)+2)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
@@ -138,12 +164,12 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status
 	}
 }
 
-func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, interval time.Duration, status *runtimeinfo.Status) {
+func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, sources []scanner.DiscoverySource, interval time.Duration, status *runtimeinfo.Status) {
 	run := func() {
 		status.ScanStarted(time.Now().UTC())
-		runCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		result, err := scan.RunWithRecent(runCtx, streamWindow)
+		result, err := scan.RunWithSources(runCtx, streamWindow, sources)
 		if err != nil {
 			status.ScanFailed(err)
 			slog.Warn("trend scan failed", "error", err)
@@ -206,4 +232,18 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func stringsTrim(value string) string {
+	for len(value) > 0 && (value[0] == ' ' || value[0] == '\t' || value[0] == '\n' || value[0] == '\r') {
+		value = value[1:]
+	}
+	for len(value) > 0 {
+		last := value[len(value)-1]
+		if last != ' ' && last != '\t' && last != '\n' && last != '\r' {
+			break
+		}
+		value = value[:len(value)-1]
+	}
+	return value
 }
