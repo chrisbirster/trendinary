@@ -14,7 +14,7 @@ export default defineConfig({
   ],
   build: {
     outDir: "internal/web/dist",
-    emptyOutDir: true,
+    emptyOutDir: false,
   },
   server: {
     port: 5173,
