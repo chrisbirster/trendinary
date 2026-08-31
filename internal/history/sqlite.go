@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,11 +16,30 @@ type Store struct {
 	db *sql.DB
 }
 
+type RawMetrics struct {
+	SignalCount    int     `json:"signal_count"`
+	SourceCount    int     `json:"source_count"`
+	CommunityCount int     `json:"community_count"`
+	RawAttention   float64 `json:"raw_attention"`
+	RawEngagement  float64 `json:"raw_engagement"`
+}
+
 type Snapshot struct {
 	TrendKey   string                `json:"trend_key"`
 	ObservedAt time.Time             `json:"observed_at"`
 	Lifecycle  string                `json:"lifecycle"`
 	Score      engine.ScoreBreakdown `json:"score"`
+	Raw        RawMetrics            `json:"raw"`
+}
+
+type Baseline struct {
+	TrendKey        string    `json:"trend_key"`
+	Observations    int       `json:"observations"`
+	AverageAttention float64  `json:"average_attention"`
+	MaximumAttention float64  `json:"maximum_attention"`
+	FirstSeen       time.Time `json:"first_seen,omitempty"`
+	LastSeen        time.Time `json:"last_seen,omitempty"`
+	Latest          *Snapshot `json:"latest,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -68,6 +88,9 @@ func (s *Store) configure(ctx context.Context) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
+	// This schema is still pre-production. Raw metrics are stored alongside the
+	// normalized score inputs so future calibration can be replayed without
+	// circularly deriving baselines from already-normalized values.
 	const schema = `
 CREATE TABLE IF NOT EXISTS signals (
   id TEXT PRIMARY KEY,
@@ -100,9 +123,15 @@ CREATE TABLE IF NOT EXISTS trend_snapshots (
   community_breadth REAL NOT NULL,
   novelty REAL NOT NULL,
   confidence REAL NOT NULL,
+  signal_count INTEGER NOT NULL DEFAULT 0,
+  source_count INTEGER NOT NULL DEFAULT 0,
+  community_count INTEGER NOT NULL DEFAULT 0,
+  raw_attention REAL NOT NULL DEFAULT 0,
+  raw_engagement REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (trend_key, observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_trend_snapshots_observed_at ON trend_snapshots(observed_at);
+CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_time ON trend_snapshots(trend_key, observed_at DESC);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("sqlite migrate: %w", err)
@@ -175,8 +204,9 @@ func (s *Store) RecordSnapshot(ctx context.Context, snapshot Snapshot) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO trend_snapshots (
   trend_key, observed_at, lifecycle, score, score_version, attention, velocity,
-  source_breadth, community_breadth, novelty, confidence
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  source_breadth, community_breadth, novelty, confidence, signal_count,
+  source_count, community_count, raw_attention, raw_engagement
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		snapshot.TrendKey,
 		observedAt.UTC().Format(time.RFC3339Nano),
 		snapshot.Lifecycle,
@@ -188,11 +218,78 @@ INSERT INTO trend_snapshots (
 		snapshot.Score.CommunityBreadth,
 		snapshot.Score.Novelty,
 		snapshot.Score.Confidence,
+		snapshot.Raw.SignalCount,
+		snapshot.Raw.SourceCount,
+		snapshot.Raw.CommunityCount,
+		snapshot.Raw.RawAttention,
+		snapshot.Raw.RawEngagement,
 	)
 	if err != nil {
 		return fmt.Errorf("record snapshot: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) LatestSnapshot(ctx context.Context, trendKey string) (Snapshot, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT observed_at, lifecycle, score, score_version, attention, velocity,
+       source_breadth, community_breadth, novelty, confidence, signal_count,
+       source_count, community_count, raw_attention, raw_engagement
+FROM trend_snapshots
+WHERE trend_key = ?
+ORDER BY observed_at DESC
+LIMIT 1`, trendKey)
+
+	snapshot, err := scanSnapshot(row, trendKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Snapshot{}, false, nil
+	}
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	return snapshot, true, nil
+}
+
+func (s *Store) Baseline(ctx context.Context, trendKey string, since time.Time) (Baseline, error) {
+	if since.IsZero() {
+		since = time.Now().UTC().Add(-7 * 24 * time.Hour)
+	}
+	var baseline Baseline
+	baseline.TrendKey = trendKey
+	var firstSeen, lastSeen sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*), COALESCE(AVG(raw_attention), 0), COALESCE(MAX(raw_attention), 0),
+       MIN(observed_at), MAX(observed_at)
+FROM trend_snapshots
+WHERE trend_key = ? AND observed_at >= ?`, trendKey, since.UTC().Format(time.RFC3339Nano)).Scan(
+		&baseline.Observations,
+		&baseline.AverageAttention,
+		&baseline.MaximumAttention,
+		&firstSeen,
+		&lastSeen,
+	); err != nil {
+		return Baseline{}, fmt.Errorf("baseline: %w", err)
+	}
+	if firstSeen.Valid {
+		parsed, err := time.Parse(time.RFC3339Nano, firstSeen.String)
+		if err != nil {
+			return Baseline{}, err
+		}
+		baseline.FirstSeen = parsed
+	}
+	if lastSeen.Valid {
+		parsed, err := time.Parse(time.RFC3339Nano, lastSeen.String)
+		if err != nil {
+			return Baseline{}, err
+		}
+		baseline.LastSeen = parsed
+	}
+	if latest, ok, err := s.LatestSnapshot(ctx, trendKey); err != nil {
+		return Baseline{}, err
+	} else if ok {
+		baseline.Latest = &latest
+	}
+	return baseline, nil
 }
 
 func (s *Store) RecentSnapshots(ctx context.Context, trendKey string, limit int) ([]Snapshot, error) {
@@ -204,7 +301,8 @@ func (s *Store) RecentSnapshots(ctx context.Context, trendKey string, limit int)
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT observed_at, lifecycle, score, score_version, attention, velocity,
-       source_breadth, community_breadth, novelty, confidence
+       source_breadth, community_breadth, novelty, confidence, signal_count,
+       source_count, community_count, raw_attention, raw_engagement
 FROM trend_snapshots
 WHERE trend_key = ?
 ORDER BY observed_at DESC
@@ -216,29 +314,46 @@ LIMIT ?`, trendKey, limit)
 
 	out := make([]Snapshot, 0, limit)
 	for rows.Next() {
-		var observed string
-		var snapshot Snapshot
-		snapshot.TrendKey = trendKey
-		if err := rows.Scan(
-			&observed,
-			&snapshot.Lifecycle,
-			&snapshot.Score.Score,
-			&snapshot.Score.Version,
-			&snapshot.Score.Attention,
-			&snapshot.Score.Velocity,
-			&snapshot.Score.SourceBreadth,
-			&snapshot.Score.CommunityBreadth,
-			&snapshot.Score.Novelty,
-			&snapshot.Score.Confidence,
-		); err != nil {
-			return nil, err
-		}
-		timestamp, err := time.Parse(time.RFC3339Nano, observed)
+		snapshot, err := scanSnapshot(rows, trendKey)
 		if err != nil {
 			return nil, err
 		}
-		snapshot.ObservedAt = timestamp
 		out = append(out, snapshot)
 	}
 	return out, rows.Err()
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSnapshot(row rowScanner, trendKey string) (Snapshot, error) {
+	var observed string
+	var snapshot Snapshot
+	snapshot.TrendKey = trendKey
+	if err := row.Scan(
+		&observed,
+		&snapshot.Lifecycle,
+		&snapshot.Score.Score,
+		&snapshot.Score.Version,
+		&snapshot.Score.Attention,
+		&snapshot.Score.Velocity,
+		&snapshot.Score.SourceBreadth,
+		&snapshot.Score.CommunityBreadth,
+		&snapshot.Score.Novelty,
+		&snapshot.Score.Confidence,
+		&snapshot.Raw.SignalCount,
+		&snapshot.Raw.SourceCount,
+		&snapshot.Raw.CommunityCount,
+		&snapshot.Raw.RawAttention,
+		&snapshot.Raw.RawEngagement,
+	); err != nil {
+		return Snapshot{}, err
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, observed)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.ObservedAt = timestamp
+	return snapshot, nil
 }
