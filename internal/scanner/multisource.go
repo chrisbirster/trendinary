@@ -12,6 +12,12 @@ import (
 	"github.com/chrisbirster/trendinary/internal/signals"
 )
 
+// The v0.1 lexical clusterer performs pairwise similarity comparisons. Keep
+// the ingestion window large for durability/replay context, but bound each
+// scoring pass until the clustering implementation moves to an indexed or
+// semantic candidate-generation strategy.
+const maxStreamingDiscoverySignals = 1500
+
 // RunWithRecent treats the bounded streaming window as a first-class discovery
 // source alongside Hacker News. Either source may be temporarily unavailable;
 // a scan only fails when no discovery signals remain at all.
@@ -33,7 +39,11 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 		}
 	}
 	if live != nil {
-		discovery = append(discovery, live.Recent(time.Time{})...)
+		streamSignals := live.Recent(time.Time{})
+		if len(streamSignals) > maxStreamingDiscoverySignals {
+			streamSignals = streamSignals[len(streamSignals)-maxStreamingDiscoverySignals:]
+		}
+		discovery = append(discovery, streamSignals...)
 	}
 	discovery = deduplicateSignals(discovery)
 	if len(discovery) == 0 {
