@@ -3,23 +3,27 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	"github.com/chrisbirster/trendinary/internal/store"
 )
 
 type Server struct {
 	store    *store.Memory
 	frontend http.Handler
+	hn       *hackernews.Client
 }
 
 func New(s *store.Memory, frontend http.Handler) http.Handler {
-	server := &Server{store: s, frontend: frontend}
+	server := &Server{store: s, frontend: frontend, hn: hackernews.NewClient(nil)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
+	mux.HandleFunc("GET /api/v1/signals/hacker-news", server.hackerNewsSignals)
 	mux.HandleFunc("GET /api/v1/sources/{domain}", server.source)
 	mux.HandleFunc("GET /api/v1/methodology/bias", server.biasMethodology)
 	mux.Handle("/", frontend)
@@ -46,6 +50,29 @@ func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": trend})
+}
+
+func (s *Server) hackerNewsSignals(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 50 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "limit must be between 1 and 50"})
+			return
+		}
+		limit = parsed
+	}
+
+	items, err := s.hn.Top(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "hacker news source unavailable"})
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": items,
+		"meta": map[string]any{"source": "Hacker News", "live": true},
+	})
 }
 
 func (s *Server) source(w http.ResponseWriter, r *http.Request) {
