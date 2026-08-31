@@ -1,0 +1,90 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/chrisbirster/trendinary/internal/store"
+)
+
+type Server struct {
+	store    *store.Memory
+	frontend http.Handler
+}
+
+func New(s *store.Memory, frontend http.Handler) http.Handler {
+	server := &Server{store: s, frontend: frontend}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/healthz", server.health)
+	mux.HandleFunc("GET /api/v1/trends", server.trends)
+	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
+	mux.HandleFunc("GET /api/v1/sources/{domain}", server.source)
+	mux.HandleFunc("GET /api/v1/methodology/bias", server.biasMethodology)
+	mux.Handle("/", frontend)
+	return withHeaders(mux)
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"service": "trendinary",
+		"version": "v1",
+		"time":    time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) trends(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"data": s.store.Trends()})
+}
+
+func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
+	trend, ok := s.store.Trend(r.PathValue("slug"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "trend not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": trend})
+}
+
+func (s *Server) source(w http.ResponseWriter, r *http.Request) {
+	domain := strings.ToLower(r.PathValue("domain"))
+	source, ok := s.store.Source(domain)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "source not rated or not known"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": source})
+}
+
+func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level political label from a single article.",
+			"labels": []string{"left", "lean-left", "center", "lean-right", "right", "mixed", "not-rated"},
+			"display_rules": []string{
+				"Always display the rating provider and confidence when a political leaning label is shown.",
+				"Preserve the provider's scope, such as web-only versus TV or opinion coverage.",
+				"Use not-rated when no evidence-backed external assessment is available.",
+				"Keep source leaning separate from the stance or claims of an individual article.",
+			},
+			"initial_provider": "AllSides",
+		},
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func withHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		next.ServeHTTP(w, r)
+	})
+}
