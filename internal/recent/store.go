@@ -1,6 +1,7 @@
 package recent
 
 import (
+	"container/heap"
 	"sort"
 	"sync"
 	"time"
@@ -11,17 +12,52 @@ import (
 type entry struct {
 	signal     model.Signal
 	observedAt time.Time
+	generation uint64
+}
+
+type expiryItem struct {
+	id         string
+	observedAt time.Time
+	generation uint64
+}
+
+type expiryHeap []expiryItem
+
+func (h expiryHeap) Len() int { return len(h) }
+func (h expiryHeap) Less(i, j int) bool {
+	if h[i].observedAt.Equal(h[j].observedAt) {
+		if h[i].id == h[j].id {
+			return h[i].generation < h[j].generation
+		}
+		return h[i].id < h[j].id
+	}
+	return h[i].observedAt.Before(h[j].observedAt)
+}
+func (h expiryHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *expiryHeap) Push(value any) { *h = append(*h, value.(expiryItem)) }
+func (h *expiryHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = expiryItem{}
+	*h = old[:last]
+	return value
 }
 
 // Store is a bounded, concurrency-safe window of recently observed signals.
 // It is intentionally not the durable source of truth; SQLite owns durability.
 // This buffer exists so the scoring scanner can cheaply cluster the current
 // attention window without loading the full history database every run.
+//
+// Expiry/capacity maintenance uses a min-heap so a high-volume Jetstream write
+// costs O(log n) rather than scanning the entire window for every event.
 type Store struct {
-	mu         sync.RWMutex
-	entries    map[string]entry
-	maxEntries int
-	ttl        time.Duration
+	mu             sync.Mutex
+	entries        map[string]entry
+	expiry         expiryHeap
+	maxEntries     int
+	ttl            time.Duration
+	nextGeneration uint64
 }
 
 func New(maxEntries int, ttl time.Duration) *Store {
@@ -31,31 +67,39 @@ func New(maxEntries int, ttl time.Duration) *Store {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
-	return &Store{
+	store := &Store{
 		entries:    make(map[string]entry, min(maxEntries, 4096)),
+		expiry:     make(expiryHeap, 0, min(maxEntries, 4096)),
 		maxEntries: maxEntries,
 		ttl:        ttl,
 	}
+	heap.Init(&store.expiry)
+	return store
 }
 
 func (s *Store) Upsert(signal model.Signal, observedAt time.Time) {
 	if signal.ID == "" {
 		return
 	}
+	now := time.Now().UTC()
 	if observedAt.IsZero() {
-		observedAt = time.Now().UTC()
+		observedAt = now
 	}
 	observedAt = observedAt.UTC()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries[signal.ID] = entry{signal: signal, observedAt: observedAt}
-	s.pruneLocked(observedAt)
+	s.nextGeneration++
+	item := entry{signal: signal, observedAt: observedAt, generation: s.nextGeneration}
+	s.entries[signal.ID] = item
+	heap.Push(&s.expiry, expiryItem{id: signal.ID, observedAt: observedAt, generation: item.generation})
+	s.pruneLocked(now)
 }
 
 func (s *Store) UpsertMany(values []model.Signal, observedAt time.Time) {
+	now := time.Now().UTC()
 	if observedAt.IsZero() {
-		observedAt = time.Now().UTC()
+		observedAt = now
 	}
 	observedAt = observedAt.UTC()
 
@@ -65,9 +109,12 @@ func (s *Store) UpsertMany(values []model.Signal, observedAt time.Time) {
 		if signal.ID == "" {
 			continue
 		}
-		s.entries[signal.ID] = entry{signal: signal, observedAt: observedAt}
+		s.nextGeneration++
+		item := entry{signal: signal, observedAt: observedAt, generation: s.nextGeneration}
+		s.entries[signal.ID] = item
+		heap.Push(&s.expiry, expiryItem{id: signal.ID, observedAt: observedAt, generation: item.generation})
 	}
-	s.pruneLocked(observedAt)
+	s.pruneLocked(now)
 }
 
 func (s *Store) Delete(id string) {
@@ -76,6 +123,7 @@ func (s *Store) Delete(id string) {
 	}
 	s.mu.Lock()
 	delete(s.entries, id)
+	s.pruneLocked(time.Now().UTC())
 	s.mu.Unlock()
 }
 
@@ -111,40 +159,28 @@ func (s *Store) Recent(since time.Time) []model.Signal {
 }
 
 func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(time.Now().UTC())
 	return len(s.entries)
 }
 
 func (s *Store) pruneLocked(now time.Time) {
 	cutoff := now.Add(-s.ttl)
-	for id, item := range s.entries {
-		if item.observedAt.Before(cutoff) {
-			delete(s.entries, id)
+	for s.expiry.Len() > 0 {
+		candidate := s.expiry[0]
+		current, exists := s.entries[candidate.id]
+		if !exists || current.generation != candidate.generation {
+			heap.Pop(&s.expiry)
+			continue
 		}
-	}
-	if len(s.entries) <= s.maxEntries {
-		return
-	}
 
-	values := make([]struct {
-		id string
-		entry
-	}, 0, len(s.entries))
-	for id, item := range s.entries {
-		values = append(values, struct {
-			id string
-			entry
-		}{id: id, entry: item})
-	}
-	sort.SliceStable(values, func(i, j int) bool {
-		if values[i].observedAt.Equal(values[j].observedAt) {
-			return values[i].id < values[j].id
+		expired := current.observedAt.Before(cutoff)
+		overCapacity := len(s.entries) > s.maxEntries
+		if !expired && !overCapacity {
+			break
 		}
-		return values[i].observedAt.Before(values[j].observedAt)
-	})
-	remove := len(values) - s.maxEntries
-	for index := 0; index < remove; index++ {
-		delete(s.entries, values[index].id)
+		heap.Pop(&s.expiry)
+		delete(s.entries, candidate.id)
 	}
 }
