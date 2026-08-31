@@ -20,5 +20,15 @@ jobs:
         with:
           node-version: "24"
       - run: npm install
+      - name: Resolve Go modules
+        run: |
+          go mod tidy
+          echo "TRENDINARY_GO_MOD_BEGIN"
+          cat go.mod
+          echo "TRENDINARY_GO_MOD_END"
+          echo "TRENDINARY_GO_SUM_BASE64_BEGIN"
+          base64 -w0 go.sum
+          echo
+          echo "TRENDINARY_GO_SUM_BASE64_END"
       - run: npm run verify
       - run: docker build -t trendinary:ci .
