@@ -1,6 +1,6 @@
 {
   "name": "trendinary",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,9 +8,16 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:api": "go run ./cmd/trendinary",
     "typecheck": "tsc --noEmit",
-    "build": "vite build",
-    "verify": "npm run typecheck && npm run build"
+    "test:go": "go test ./...",
+    "build:web": "vite build",
+    "build:server": "go build ./cmd/trendinary",
+    "build": "npm run build:web && npm run build:server",
+    "verify": "npm run typecheck && npm run test:go && npm run build",
+    "deploy:fly": "fly deploy",
+    "infra:diff": "sst diff --stage production",
+    "infra:deploy": "sst deploy --stage production"
   },
   "dependencies": {
     "@solidjs/router": "2.0.0-next.17",
@@ -21,6 +28,7 @@
   "devDependencies": {
     "@solidjs/vite-plugin": "3.0.0-next.29",
     "@stylexjs/unplugin": "0.19.0",
+    "sst": "4.17.1",
     "typescript": "5.9.2",
     "vite": "8.2.1"
   }

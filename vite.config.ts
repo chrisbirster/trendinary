@@ -12,8 +12,15 @@ export default defineConfig({
     }),
     solid(),
   ],
+  build: {
+    outDir: "internal/web/dist",
+    emptyOutDir: false,
+  },
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+      "/api": "http://127.0.0.1:8080",
+    },
   },
 });
