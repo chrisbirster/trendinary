@@ -24,7 +24,7 @@ Jetstream v2
   -> durable Jetstream cursor
   -> periodic multi-source scanner
   -> HN + Jetstream discovery merge
-  -> clustering
+  -> bounded clustering sample
   -> Bluesky search enrichment
   -> historical baseline
   -> Trendinary Score + lifecycle
@@ -43,9 +43,10 @@ atproto-jetstream-v2-posts
 
 For each batch Trendinary applies state in this order:
 
-1. persist creates/updates and upstream deletes;
-2. update the bounded recent window;
-3. persist `Batch.LastCursor()`.
+1. fold repeated mutations for each record in wire order so the last mutation wins;
+2. persist final creates/updates and upstream deletes;
+3. update the bounded recent window;
+4. persist `Batch.LastCursor()`.
 
 The state operations are idempotent. If the process crashes after writing signals but before advancing the cursor, the batch is replayed safely.
 
@@ -60,7 +61,9 @@ Defaults:
 - maximum entries: `50,000`
 - TTL: `30m`
 
-Both TTL pruning and capacity eviction are deterministic. Deletes and updates are reflected immediately.
+The window uses a timestamp min-heap for expiry and capacity eviction, making normal stream ingestion O(log n) instead of scanning the whole window for every post. Deletes and updates are reflected immediately, and stale heap nodes from updates cannot evict newer versions of a record.
+
+The current v0.1 lexical clusterer performs pairwise similarity checks. Until candidate generation is indexed or semantic, each scoring pass therefore uses only the newest `1,500` streaming signals from the larger working window, plus the polling-source signals. This bounds the expensive phase while preserving the larger buffer for restart/replay context and future clustering strategies.
 
 ## Environment variables
 
@@ -77,10 +80,14 @@ Both TTL pruning and capacity eviction are deterministic. Deletes and updates ar
 
 Jetstream commit events provide the post record, but not the continuously changing like/repost/reply counters used by the Bluesky AppView. Stream-first topics therefore initially score from signal count, velocity, author/community breadth, novelty, and cross-source spread. Search enrichment can add engagement observations for top clusters.
 
+The first collector also does not yet fold DID-level account/identity events. Recent post state naturally ages out of the working window, while durable account-state cleanup and handle hydration are follow-on work.
+
 Next ATProto improvements:
 
 - DID-to-handle identity cache;
+- account-state folding/purge semantics;
 - selective engagement hydration for candidate clusters;
 - richer record facets/links/quoted-post context;
 - stream health/cursor observability endpoint;
-- raw event archive samples in R2 for replay/debugging.
+- raw event archive samples in R2 for replay/debugging;
+- indexed/semantic clustering so the full live window can participate efficiently.
