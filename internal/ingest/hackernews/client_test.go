@@ -13,13 +13,13 @@ import (
 func TestTop(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/topstories.json", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `[101,102]`)
+		fmt.Fprint(w, "[101,102]")
 	})
 	mux.HandleFunc("/item/101.json", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"id":101,"title":"First signal","score":42,"type":"story"}`)
+		fmt.Fprint(w, "{\"id\":101,\"title\":\"First signal\",\"score\":42,\"type\":\"story\"}")
 	})
 	mux.HandleFunc("/item/102.json", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"id":102,"title":"Second signal","score":21,"type":"story"}`)
+		fmt.Fprint(w, "{\"id\":102,\"title\":\"Second signal\",\"score\":21,\"type\":\"story\"}")
 	})
 
 	server := httptest.NewServer(mux)
