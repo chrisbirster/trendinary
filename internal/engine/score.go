@@ -13,15 +13,6 @@ type ScoreInput struct {
 	Confidence       float64 `json:"confidence"`
 }
 
-type ScoreResult struct {
-	Version intBreakdownVersion `json:"-"`
-}
-
-// intBreakdownVersion is deliberately unexported from the API. The public
-// ScoreBreakdown below is the stable JSON contract; this alias prevents callers
-// from accidentally treating internal version mechanics as product data.
-type intBreakdownVersion struct{}
-
 type ScoreBreakdown struct {
 	Version          string  `json:"version"`
 	Score            int     `json:"score"`
