@@ -18,7 +18,7 @@ func TestSearch(t *testing.T) {
 		if got := r.URL.Query().Get("sort"); got != "latest" {
 			t.Fatalf("sort = %q", got)
 		}
-		fmt.Fprint(w, `{"posts":[{"uri":"at://did:plc:test/app.bsky.feed.post/abc","author":{"did":"did:plc:test","handle":"example.test"},"record":{"text":"AT Protocol is moving","createdAt":"2026-08-30T20:00:00Z"},"likeCount":12,"repostCount":3}]}`)
+		fmt.Fprint(w, "{\"posts\":[{\"uri\":\"at://did:plc:test/app.bsky.feed.post/abc\",\"author\":{\"did\":\"did:plc:test\",\"handle\":\"example.test\"},\"record\":{\"text\":\"AT Protocol is moving\",\"createdAt\":\"2026-08-30T20:00:00Z\"},\"likeCount\":12,\"repostCount\":3}]}")
 	}))
 	defer server.Close()
 
