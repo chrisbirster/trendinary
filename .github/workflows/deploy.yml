@@ -17,6 +17,14 @@ jobs:
           node-version: "24"
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: npm install
+      - name: Verify persistent Fly volume
+        run: |
+          if ! flyctl volumes list --app trendinary | grep -q "trendinary_data"; then
+            echo "::error::Missing Fly volume trendinary_data. Create it once with: flyctl volumes create trendinary_data --app trendinary --region iad --size 1"
+            exit 1
+          fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Deploy Go origin to Fly.io
         run: npm run deploy:fly
         env:
