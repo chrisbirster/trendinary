@@ -59,3 +59,31 @@ func TestUpsertReplacesSignal(t *testing.T) {
 		t.Fatalf("unexpected upsert: %+v", values)
 	}
 }
+
+func TestUpdatedEntrySurvivesStaleHeapNode(t *testing.T) {
+	store := recent.New(2, time.Hour)
+	base := time.Now().UTC()
+	store.Upsert(signal("same"), base.Add(-10*time.Minute))
+	store.Upsert(signal("middle"), base.Add(-5*time.Minute))
+
+	updated := signal("same")
+	updated.Text = "fresh"
+	store.Upsert(updated, base)
+	store.Upsert(signal("newest"), base.Add(time.Second))
+
+	values := store.Recent(base.Add(-time.Hour))
+	if len(values) != 2 {
+		t.Fatalf("len = %d, want 2", len(values))
+	}
+	if values[0].ID != "same" || values[0].Text != "fresh" || values[1].ID != "newest" {
+		t.Fatalf("stale heap entry evicted current value: %+v", values)
+	}
+}
+
+func TestExpiredReplayObservationIsDroppedImmediately(t *testing.T) {
+	store := recent.New(10, 5*time.Minute)
+	store.Upsert(signal("stale"), time.Now().UTC().Add(-10*time.Minute))
+	if got := store.Len(); got != 0 {
+		t.Fatalf("len = %d, want stale replay event to be expired", got)
+	}
+}
