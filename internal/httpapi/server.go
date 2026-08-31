@@ -1,37 +1,53 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
+	"github.com/chrisbirster/trendinary/internal/model"
 	"github.com/chrisbirster/trendinary/internal/signals"
 	"github.com/chrisbirster/trendinary/internal/store"
 )
+
+type History interface {
+	RecordSignals(context.Context, []model.Signal) error
+	RecentSnapshots(context.Context, string, int) ([]history.Snapshot, error)
+}
 
 type Server struct {
 	store    *store.Memory
 	frontend http.Handler
 	hn       *hackernews.Client
 	bluesky  *bluesky.Client
+	history  History
 }
 
 func New(s *store.Memory, frontend http.Handler) http.Handler {
+	return NewWithHistory(s, frontend, nil)
+}
+
+func NewWithHistory(s *store.Memory, frontend http.Handler, historyStore History) http.Handler {
 	server := &Server{
 		store:    s,
 		frontend: frontend,
 		hn:       hackernews.NewClient(nil),
 		bluesky:  bluesky.NewClient(nil),
+		history:  historyStore,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
 	mux.HandleFunc("GET /api/v1/signals/hacker-news", server.hackerNewsSignals)
 	mux.HandleFunc("GET /api/v1/signals/bluesky", server.blueskySignals)
 	mux.HandleFunc("GET /api/v1/sources/{domain}", server.source)
@@ -47,6 +63,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"service": "trendinary",
 		"version": "v1",
 		"time":    time.Now().UTC().Format(time.RFC3339),
+		"history": s.history != nil,
 	})
 }
 
@@ -63,6 +80,24 @@ func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": trend})
 }
 
+func (s *Server) trendHistory(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "trend history is not configured"})
+		return
+	}
+	limit, ok := queryLimit(w, r, 72, 500)
+	if !ok {
+		return
+	}
+	snapshots, err := s.history.RecentSnapshots(r.Context(), r.PathValue("slug"), limit)
+	if err != nil {
+		slog.Error("read trend history", "trend", r.PathValue("slug"), "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend history unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": snapshots})
+}
+
 func (s *Server) hackerNewsSignals(w http.ResponseWriter, r *http.Request) {
 	limit, ok := queryLimit(w, r, 20, 50)
 	if !ok {
@@ -74,9 +109,11 @@ func (s *Server) hackerNewsSignals(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "hacker news source unavailable"})
 		return
 	}
+	normalized := signals.HackerNews(items)
+	s.recordSignals(r.Context(), normalized)
 	w.Header().Set("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": signals.HackerNews(items),
+		"data": normalized,
 		"meta": map[string]any{"source": "Hacker News", "live": true, "normalized": true},
 	})
 }
@@ -97,9 +134,11 @@ func (s *Server) blueskySignals(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "bluesky source unavailable"})
 		return
 	}
+	normalized := signals.Bluesky(result.Posts)
+	s.recordSignals(r.Context(), normalized)
 	w.Header().Set("Cache-Control", "public, max-age=15, stale-while-revalidate=30")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data": signals.Bluesky(result.Posts),
+		"data": normalized,
 		"meta": map[string]any{
 			"source":     "Bluesky",
 			"live":       true,
@@ -108,6 +147,18 @@ func (s *Server) blueskySignals(w http.ResponseWriter, r *http.Request) {
 			"hits_total": result.HitsTotal,
 		},
 	})
+}
+
+func (s *Server) recordSignals(ctx context.Context, values []model.Signal) {
+	if s.history == nil || len(values) == 0 {
+		return
+	}
+	if err := s.history.RecordSignals(ctx, values); err != nil {
+		// Source availability is more important than a transient history write.
+		// The scanner can fetch the signal again; do not turn a storage hiccup
+		// into a 502 for a healthy upstream source.
+		slog.Warn("record live signals", "count", len(values), "error", err)
+	}
 }
 
 func (s *Server) source(w http.ResponseWriter, r *http.Request) {
@@ -143,12 +194,12 @@ func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
 			"range":   "0-100",
 			"principle": "Score unexpected attention, not fame. Metrics are normalized against historical baselines before entering the scoring function.",
 			"weights": map[string]float64{
-				"attention":         0.20,
-				"velocity":          0.30,
-				"source_breadth":    0.18,
-				"community_breadth": 0.12,
-				"novelty":           0.12,
-				"confidence":        0.08,
+				"attention":          0.20,
+				"velocity":           0.30,
+				"source_breadth":     0.18,
+				"community_breadth":  0.12,
+				"novelty":            0.12,
+				"confidence":         0.08,
 			},
 			"warning": "Version 0.1 is an explicit starting model. Thresholds will be calibrated against stored historical outcomes rather than optimized for engagement.",
 		},
