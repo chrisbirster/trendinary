@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,8 +101,10 @@ func (c *Collector) Run(ctx context.Context) error {
 // advancing the cursor. All operations are idempotent, so replay after a crash
 // is safe if the process dies before SaveCursor succeeds.
 func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event, cursor uint64) error {
-	upserts := make([]observedSignal, 0, len(events))
-	deletes := make([]string, 0)
+	// A batch can contain multiple mutations for the same record. Fold in wire
+	// order so the last mutation wins before grouped durable writes are issued.
+	upserts := make(map[string]observedSignal)
+	deletes := make(map[string]struct{})
 
 	for _, event := range events {
 		if event.Kind != bskyjetstream.KindCommit || event.Commit == nil || event.Commit.Collection != postsCollection {
@@ -113,7 +116,8 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 		}
 
 		if event.Commit.Operation == bskyjetstream.OpDelete {
-			deletes = append(deletes, id)
+			delete(upserts, id)
+			deletes[id] = struct{}{}
 			continue
 		}
 
@@ -122,30 +126,42 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 			// An update can make a previously useful text post unclusterable.
 			// Removing it keeps the live window consistent with upstream state.
 			if event.Commit.Operation == bskyjetstream.OpUpdate {
-				deletes = append(deletes, id)
+				delete(upserts, id)
+				deletes[id] = struct{}{}
 			}
 			continue
 		}
-		upserts = append(upserts, observedSignal{signal: signal, observedAt: eventTime(event)})
+		delete(deletes, id)
+		upserts[id] = observedSignal{signal: signal, observedAt: eventTime(event)}
 	}
 
-	if len(upserts) > 0 {
-		values := make([]model.Signal, 0, len(upserts))
-		for _, item := range upserts {
-			values = append(values, item.signal)
-		}
-		if err := c.history.RecordSignals(ctx, values); err != nil {
-			return fmt.Errorf("persist jetstream signals: %w", err)
-		}
+	upsertIDs := make([]string, 0, len(upserts))
+	for id := range upserts {
+		upsertIDs = append(upsertIDs, id)
 	}
-	if err := c.history.DeleteSignals(ctx, deletes); err != nil {
+	sort.Strings(upsertIDs)
+	values := make([]model.Signal, 0, len(upsertIDs))
+	for _, id := range upsertIDs {
+		values = append(values, upserts[id].signal)
+	}
+	if err := c.history.RecordSignals(ctx, values); err != nil {
+		return fmt.Errorf("persist jetstream signals: %w", err)
+	}
+
+	deleteIDs := make([]string, 0, len(deletes))
+	for id := range deletes {
+		deleteIDs = append(deleteIDs, id)
+	}
+	sort.Strings(deleteIDs)
+	if err := c.history.DeleteSignals(ctx, deleteIDs); err != nil {
 		return fmt.Errorf("persist jetstream deletes: %w", err)
 	}
 
-	for _, item := range upserts {
+	for _, id := range upsertIDs {
+		item := upserts[id]
 		c.recent.Upsert(item.signal, item.observedAt)
 	}
-	for _, id := range deletes {
+	for _, id := range deleteIDs {
 		c.recent.Delete(id)
 	}
 
