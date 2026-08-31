@@ -2,7 +2,10 @@ module github.com/chrisbirster/trendinary
 
 go 1.27.0
 
-require modernc.org/sqlite v1.57.0
+require (
+	github.com/bluesky-social/jetstream v0.2.1
+	modernc.org/sqlite v1.57.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
