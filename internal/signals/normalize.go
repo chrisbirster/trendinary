@@ -32,6 +32,7 @@ func HackerNews(items []hackernews.Item) []model.Signal {
 			Title:       item.Title,
 			URL:         link,
 			Author:      item.By,
+			AuthorID:    item.By,
 			PublishedAt: published,
 			Engagement: model.Engagement{
 				Score:   item.Score,
@@ -49,16 +50,27 @@ func Bluesky(posts []bluesky.Post) []model.Signal {
 		if index := strings.LastIndex(post.URI, "/"); index >= 0 && index+1 < len(post.URI) {
 			rkey = post.URI[index+1:]
 		}
+		actor := actorProfile(post.Author)
 		link := ""
-		if post.Author.Handle != "" && rkey != "" {
-			link = fmt.Sprintf("https://bsky.app/profile/%s/post/%s", post.Author.Handle, rkey)
+		profileRef := post.Author.Handle
+		if profileRef == "" {
+			profileRef = post.Author.DID
+		}
+		if profileRef != "" && rkey != "" {
+			link = fmt.Sprintf("https://bsky.app/profile/%s/post/%s", profileRef, rkey)
+		}
+		author := post.Author.Handle
+		if author == "" {
+			author = post.Author.DID
 		}
 		out = append(out, model.Signal{
 			ID:          "bsky:" + post.URI,
 			Source:      blueskySource,
 			Text:        post.Record.Text,
 			URL:         link,
-			Author:      post.Author.Handle,
+			Author:      author,
+			AuthorID:    post.Author.DID,
+			Actor:       actor,
 			PublishedAt: post.Record.CreatedAt,
 			Engagement: model.Engagement{
 				Replies: post.ReplyCount,
@@ -69,4 +81,16 @@ func Bluesky(posts []bluesky.Post) []model.Signal {
 		})
 	}
 	return out
+}
+
+func actorProfile(author bluesky.Author) *model.ActorProfile {
+	if author.DID == "" && author.Handle == "" && author.DisplayName == "" && author.Avatar == "" {
+		return nil
+	}
+	return &model.ActorProfile{
+		DID:         author.DID,
+		Handle:      author.Handle,
+		DisplayName: author.DisplayName,
+		Avatar:      author.Avatar,
+	}
 }
