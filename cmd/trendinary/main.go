@@ -17,6 +17,7 @@ import (
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	jetstreaming "github.com/chrisbirster/trendinary/internal/ingest/jetstream"
 	"github.com/chrisbirster/trendinary/internal/recent"
+	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 	"github.com/chrisbirster/trendinary/internal/scanner"
 	"github.com/chrisbirster/trendinary/internal/store"
 	webapp "github.com/chrisbirster/trendinary/internal/web"
@@ -38,20 +39,30 @@ func main() {
 		envInt("TRENDINARY_RECENT_SIGNAL_LIMIT", 50_000),
 		envDuration("TRENDINARY_RECENT_SIGNAL_TTL", 30*time.Minute),
 	)
+	blueskyClient := bluesky.NewClient(nil)
 	scan := scanner.New(
 		hackernews.NewClient(nil),
-		bluesky.NewClient(nil),
+		blueskyClient,
 		historical,
 		memory,
 		scanner.Config{
-			HackerNewsLimit: envInt("TRENDINARY_HN_LIMIT", 30),
-			EnrichClusters: envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
-			BlueskyLimit: envInt("TRENDINARY_BLUESKY_LIMIT", 20),
+			HackerNewsLimit:     envInt("TRENDINARY_HN_LIMIT", 30),
+			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
+			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
 		},
 	)
 
-	handler := httpapi.New(memory, webapp.Handler(), httpapi.WithHistory(historical))
+	jetstreamEnabled := os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1"
+	scannerEnabled := os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1"
+	runtimeStatus := runtimeinfo.New(jetstreamEnabled, scannerEnabled)
+
+	handler := httpapi.New(
+		memory,
+		webapp.Handler(),
+		httpapi.WithHistory(historical),
+		httpapi.WithRuntime(runtimeStatus, streamWindow),
+	)
 	server := &http.Server{
 		Addr:              ":" + port,
 		Handler:           handler,
@@ -64,21 +75,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1" {
+	if jetstreamEnabled {
 		collector := jetstreaming.New(
 			historical,
 			streamWindow,
 			jetstreaming.Config{
-				Host: envString("TRENDINARY_JETSTREAM_HOST", "https://jetstream.us-east.bsky.network"),
+				Host:      envString("TRENDINARY_JETSTREAM_HOST", "https://jetstream.us-east.bsky.network"),
 				BatchSize: envInt("TRENDINARY_JETSTREAM_BATCH_SIZE", 128),
+				Status:    runtimeStatus,
 			},
 		)
-		go runJetstream(ctx, collector)
+		go runJetstream(ctx, collector, runtimeStatus)
 	}
 
-	if os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1" {
+	if scannerEnabled {
 		interval := envDuration("TRENDINARY_SCAN_INTERVAL", 2*time.Minute)
-		go runScanner(ctx, scan, streamWindow, interval)
+		go runScanner(ctx, scan, streamWindow, interval, runtimeStatus)
 	}
 
 	go func() {
@@ -97,7 +109,7 @@ func main() {
 	}
 }
 
-func runJetstream(ctx context.Context, collector *jetstreaming.Collector) {
+func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status *runtimeinfo.Status) {
 	backoff := 2 * time.Second
 	for {
 		err := collector.Run(ctx)
@@ -105,9 +117,11 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector) {
 			return
 		}
 		if errors.Is(err, jetstreaming.ErrFatal) {
+			status.StreamFatal(err)
 			slog.Error("jetstream collector stopped after fatal stream error", "error", err)
 			return
 		}
+		status.StreamDisconnected(err, backoff)
 		slog.Warn("jetstream collector disconnected", "error", err, "retry_in", backoff)
 
 		timer := time.NewTimer(backoff)
@@ -124,15 +138,18 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector) {
 	}
 }
 
-func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, interval time.Duration) {
+func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, interval time.Duration, status *runtimeinfo.Status) {
 	run := func() {
+		status.ScanStarted(time.Now().UTC())
 		runCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		result, err := scan.RunWithRecent(runCtx, streamWindow)
 		if err != nil {
+			status.ScanFailed(err)
 			slog.Warn("trend scan failed", "error", err)
 			return
 		}
+		status.ScanSucceeded(time.Now().UTC(), result.Signals, result.Clusters, result.Trends, len(result.Warnings))
 		slog.Info("trend scan complete",
 			"signals", result.Signals,
 			"stream_window", streamWindow.Len(),
