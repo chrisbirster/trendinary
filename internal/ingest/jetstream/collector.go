@@ -13,6 +13,7 @@ import (
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/model"
 	"github.com/chrisbirster/trendinary/internal/recent"
+	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 )
 
 const (
@@ -29,6 +30,7 @@ var (
 type Config struct {
 	Host      string
 	BatchSize int
+	Status    *runtimeinfo.Status
 }
 
 type Collector struct {
@@ -47,6 +49,10 @@ func New(historical *history.Store, recentSignals *recent.Store, config Config) 
 	return &Collector{history: historical, recent: recentSignals, config: config}
 }
 
+func (c *Collector) Host() string {
+	return c.config.Host
+}
+
 // Run consumes app.bsky.feed.post commits until the context is cancelled or
 // Jetstream reports a terminal failure. When a durable cursor exists, the v2
 // client replays from that sequence and then cuts over to the live tail.
@@ -55,6 +61,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		return fmt.Errorf("jetstream collector dependencies are incomplete")
 	}
 
+	c.config.Status.StreamConnecting(c.config.Host)
 	cursor, hasCursor, err := c.history.Cursor(ctx, CursorName)
 	if err != nil {
 		return fmt.Errorf("load jetstream cursor: %w", err)
@@ -74,6 +81,10 @@ func (c *Collector) Run(ctx context.Context) error {
 		return fmt.Errorf("subscribe jetstream: %w", err)
 	}
 	defer client.Close()
+	c.config.Status.StreamConnected(c.config.Host)
+	if hasCursor {
+		c.config.Status.StreamBatch(cursor, 0, time.Time{})
+	}
 
 	for batch, streamErr := range client.Events(ctx) {
 		if streamErr != nil {
@@ -81,6 +92,7 @@ func (c *Collector) Run(ctx context.Context) error {
 				return fmt.Errorf("%w: %v", ErrFatal, streamErr)
 			}
 			slog.Warn("recoverable jetstream error", "error", streamErr)
+			c.config.Status.StreamDisconnected(streamErr, 0)
 			continue
 		}
 		if batch == nil || len(batch.Events()) == 0 {
@@ -106,9 +118,14 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 	upserts := make(map[string]observedSignal)
 	deletes := make(map[string]struct{})
 
+	latestObserved := time.Time{}
 	for _, event := range events {
 		if event.Kind != bskyjetstream.KindCommit || event.Commit == nil || event.Commit.Collection != postsCollection {
 			continue
+		}
+		observed := eventTime(event)
+		if observed.After(latestObserved) {
+			latestObserved = observed
 		}
 		id := signalID(event.DID, event.Commit.Rkey)
 		if id == "" {
@@ -132,7 +149,7 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 			continue
 		}
 		delete(deletes, id)
-		upserts[id] = observedSignal{signal: signal, observedAt: eventTime(event)}
+		upserts[id] = observedSignal{signal: signal, observedAt: observed}
 	}
 
 	upsertIDs := make([]string, 0, len(upserts))
@@ -170,6 +187,7 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 			return fmt.Errorf("save jetstream cursor: %w", err)
 		}
 	}
+	c.config.Status.StreamBatch(cursor, len(events), latestObserved)
 	return nil
 }
 
@@ -203,6 +221,7 @@ func normalizePost(event bskyjetstream.Event) (model.Signal, bool) {
 		Text:        text,
 		URL:         fmt.Sprintf("https://bsky.app/profile/%s/post/%s", event.DID, event.Commit.Rkey),
 		Author:      event.DID,
+		AuthorID:    event.DID,
 		PublishedAt: createdAt,
 	}, true
 }
