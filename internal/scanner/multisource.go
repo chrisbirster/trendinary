@@ -16,7 +16,11 @@ import (
 // the ingestion window large for durability/replay context, but bound each
 // scoring pass until the clustering implementation moves to an indexed or
 // semantic candidate-generation strategy.
-const maxStreamingDiscoverySignals = 1500
+const (
+	maxStreamingDiscoverySignals = 1500
+	maxCandidateClusters          = 100
+	minStreamOnlyAuthors          = 2
+)
 
 // RunWithRecent treats the bounded streaming window as a first-class discovery
 // source alongside Hacker News. Either source may be temporarily unavailable;
@@ -53,10 +57,35 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 		return Result{}, fmt.Errorf("no discovery signals available")
 	}
 
-	seedClusters := engine.ClusterSignals(discovery, s.config.ClusterThreshold)
+	clustered := engine.ClusterSignals(discovery, s.config.ClusterThreshold)
+	seedClusters := make([]engine.Cluster, 0, len(clustered))
+	for _, cluster := range clustered {
+		if candidateCluster(cluster) {
+			seedClusters = append(seedClusters, cluster)
+		}
+	}
 	sort.SliceStable(seedClusters, func(i, j int) bool {
-		return clusterEngagement(seedClusters[i]) > clusterEngagement(seedClusters[j])
+		left, right := candidateWeight(seedClusters[i]), candidateWeight(seedClusters[j])
+		if left == right {
+			return seedClusters[i].Key < seedClusters[j].Key
+		}
+		return left > right
 	})
+	if len(seedClusters) > maxCandidateClusters {
+		seedClusters = seedClusters[:maxCandidateClusters]
+	}
+
+	// Raw discovery can be healthy while no topic has enough independent
+	// evidence to qualify as a trend candidate. Keep the last good published
+	// trends in that case rather than replacing them with random singleton posts.
+	if len(seedClusters) == 0 {
+		return Result{
+			Signals:  len(discovery),
+			Clusters: 0,
+			Trends:   0,
+			Warnings: append(warnings, "no clusters met the trend candidate gate"),
+		}, nil
+	}
 
 	enriched := make([]engine.Cluster, len(seedClusters))
 	copy(enriched, seedClusters)
@@ -124,4 +153,30 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 		Trends:   len(trends),
 		Warnings: warnings,
 	}, nil
+}
+
+func candidateCluster(cluster engine.Cluster) bool {
+	authors := make(map[string]struct{})
+	hasNonStreamSignal := false
+	for _, signal := range cluster.Signals {
+		if signal.Source.Domain != "bsky.app" {
+			hasNonStreamSignal = true
+		}
+		if signal.Source.Domain == "bsky.app" && signal.Author != "" {
+			authors[signal.Author] = struct{}{}
+		}
+	}
+	return hasNonStreamSignal || len(authors) >= minStreamOnlyAuthors
+}
+
+func candidateWeight(cluster engine.Cluster) int {
+	// Community agreement is deliberately worth more than raw post count so
+	// many near-duplicate posts from one account cannot dominate candidates.
+	authors := make(map[string]struct{})
+	for _, signal := range cluster.Signals {
+		if signal.Author != "" {
+			authors[signal.Source.Domain+":"+signal.Author] = struct{}{}
+		}
+	}
+	return clusterEngagement(cluster) + len(cluster.Signals)*10 + len(authors)*25
 }
