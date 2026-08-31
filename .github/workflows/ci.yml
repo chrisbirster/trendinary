@@ -21,17 +21,9 @@ jobs:
         with:
           node-version: "24"
       - run: npm install
-      - name: Resolve Go modules
-        run: go mod tidy
-      - name: Upload resolved Go lock files
-        uses: actions/upload-artifact@v4
-        with:
-          name: resolved-go-lock-files
-          path: |
-            go.mod
-            go.sum
-          if-no-files-found: error
       - name: Verify Go module lock files
-        run: git diff --exit-code -- go.mod go.sum
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
       - run: npm run verify
       - run: docker build -t trendinary:ci .
