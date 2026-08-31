@@ -48,6 +48,33 @@ export type Trend = {
   why?: string;
 };
 
+export type ScoreBreakdown = {
+  version: string;
+  score: number;
+  attention: number;
+  velocity: number;
+  source_breadth: number;
+  community_breadth: number;
+  novelty: number;
+  confidence: number;
+};
+
+export type RawTrendMetrics = {
+  signal_count: number;
+  source_count: number;
+  community_count: number;
+  raw_attention: number;
+  raw_engagement: number;
+};
+
+export type TrendSnapshot = {
+  trend_key: string;
+  observed_at: string;
+  lifecycle: Trend["status"];
+  score: ScoreBreakdown;
+  raw: RawTrendMetrics;
+};
+
 type Envelope<T> = { data: T };
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -62,6 +89,14 @@ export async function fetchTrends(): Promise<Trend[]> {
 
 export async function fetchTrend(slug: string): Promise<Trend> {
   return (await getJSON<Envelope<Trend>>(`/api/v1/trends/${encodeURIComponent(slug)}`)).data;
+}
+
+export async function fetchTrendHistory(slug: string, limit = 48): Promise<TrendSnapshot[]> {
+  return (
+    await getJSON<Envelope<TrendSnapshot[]>>(
+      `/api/v1/trends/${encodeURIComponent(slug)}/history?limit=${encodeURIComponent(String(limit))}`,
+    )
+  ).data;
 }
 
 export async function fetchSource(domain: string): Promise<TrendSource> {
