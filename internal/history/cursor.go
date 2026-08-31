@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,22 @@ CREATE TABLE IF NOT EXISTS stream_cursors (
   updated_at TEXT NOT NULL
 );`
 
+// A Trendinary process normally owns one history Store. Tests may create more,
+// so schema readiness is tracked per Store rather than with a package-wide Once.
+// This avoids executing DDL for every high-volume Jetstream cursor checkpoint.
+var cursorSchemaReady sync.Map // map[*Store]struct{}
+
+func (s *Store) ensureCursorSchema(ctx context.Context) error {
+	if _, ok := cursorSchemaReady.Load(s); ok {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, cursorSchema); err != nil {
+		return fmt.Errorf("ensure cursor schema: %w", err)
+	}
+	cursorSchemaReady.Store(s, struct{}{})
+	return nil
+}
+
 // Cursor returns the durable resume cursor for a named stream. Stream cursors
 // are intentionally independent from trend snapshots because a consumer must
 // only advance its cursor after the corresponding event batch has been folded
@@ -24,8 +41,8 @@ func (s *Store) Cursor(ctx context.Context, name string) (uint64, bool, error) {
 	if name == "" {
 		return 0, false, fmt.Errorf("cursor name is required")
 	}
-	if _, err := s.db.ExecContext(ctx, cursorSchema); err != nil {
-		return 0, false, fmt.Errorf("ensure cursor schema: %w", err)
+	if err := s.ensureCursorSchema(ctx); err != nil {
+		return 0, false, err
 	}
 
 	var seq int64
@@ -52,8 +69,8 @@ func (s *Store) SaveCursor(ctx context.Context, name string, seq uint64) error {
 	if seq > math.MaxInt64 {
 		return fmt.Errorf("cursor %q sequence %d exceeds SQLite INTEGER", name, seq)
 	}
-	if _, err := s.db.ExecContext(ctx, cursorSchema); err != nil {
-		return fmt.Errorf("ensure cursor schema: %w", err)
+	if err := s.ensureCursorSchema(ctx); err != nil {
+		return err
 	}
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO stream_cursors (name, seq, updated_at)
