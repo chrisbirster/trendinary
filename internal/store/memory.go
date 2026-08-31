@@ -2,11 +2,13 @@ package store
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
 type Memory struct {
+	mu      sync.RWMutex
 	trends  []model.Trend
 	sources map[string]model.Source
 }
@@ -64,12 +66,16 @@ func NewMemory() *Memory {
 }
 
 func (m *Memory) Trends() []model.Trend {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	out := make([]model.Trend, len(m.trends))
 	copy(out, m.trends)
 	return out
 }
 
 func (m *Memory) Trend(slug string) (model.Trend, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, trend := range m.trends {
 		if trend.Slug == slug {
 			return trend, true
@@ -78,8 +84,23 @@ func (m *Memory) Trend(slug string) (model.Trend, bool) {
 	return model.Trend{}, false
 }
 
+// ReplaceTrends publishes a complete scanner snapshot atomically. An empty
+// result is ignored so a temporary upstream outage cannot blank the homepage.
+func (m *Memory) ReplaceTrends(trends []model.Trend) {
+	if len(trends) == 0 {
+		return
+	}
+	copyOfTrends := make([]model.Trend, len(trends))
+	copy(copyOfTrends, trends)
+	m.mu.Lock()
+	m.trends = copyOfTrends
+	m.mu.Unlock()
+}
+
 func (m *Memory) Source(domain string) (model.Source, bool) {
 	domain = strings.ToLower(strings.TrimSpace(domain))
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	source, ok := m.sources[domain]
 	return source, ok
 }
