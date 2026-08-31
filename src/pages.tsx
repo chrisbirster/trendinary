@@ -1,8 +1,9 @@
 import { createSignal, For, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
 import * as stylex from "@stylexjs/stylex";
-import { fetchTrend, fetchTrends, type Trend } from "./api";
+import { fetchTrend, fetchTrendHistory, fetchTrends, type Trend, type TrendSnapshot } from "./api";
 import { missed } from "./data";
+import { historyStyles } from "./history.stylex";
 import { styles } from "./styles.stylex";
 
 const sx = stylex.attrs;
@@ -53,7 +54,6 @@ function ProductTabs() {
       <a {...sx(styles.tab)} href="/peep">PEEP 👀</a>
       <a {...sx(styles.tab)} href="/fomo">FOMO</a>
       <a {...sx(styles.tab)} href="/following">Following</a>
-      <a {...sx(styles.tab)} href="/trend/at-protocol">WTF?</a>
     </div>
   );
 }
@@ -64,6 +64,49 @@ function LoadingScoreboard() {
 
 function ApiError(props: { value?: string }) {
   return <Show when={props.value}>{(value) => <div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>SCAN INTERRUPTED</div><h2 {...sx(styles.sectionTitle)}>{value()}</h2></div>}</Show>;
+}
+
+function percent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function TrendHistoryPanel(props: { items: TrendSnapshot[]; error?: string }) {
+  const latest = () => props.items[props.items.length - 1];
+  return (
+    <div {...sx(historyStyles.panel)}>
+      <Show when={props.items.length > 0} fallback={<div {...sx(historyStyles.empty)}>{props.error ?? "Trendinary has not accumulated enough observations for a momentum chart yet."}</div>}>
+        <div {...sx(historyStyles.chart)} aria-label="Trendinary score history">
+          <For each={props.items}>
+            {(snapshot) => (
+              <div {...sx(historyStyles.barSlot)} title={`${new Date(snapshot.observed_at).toLocaleString()} · score ${snapshot.score.score} · ${snapshot.lifecycle}`}>
+                <div
+                  {...sx(historyStyles.bar)}
+                  style={{
+                    height: `${Math.max(4, snapshot.score.score)}%`,
+                    opacity: String(Math.max(0.35, snapshot.score.confidence)),
+                  }}
+                />
+              </div>
+            )}
+          </For>
+        </div>
+        <div {...sx(historyStyles.footer)}>
+          <span>{props.items.length} observations</span>
+          <span>SCORE MODEL {latest()?.score.version ?? "—"}</span>
+        </div>
+        <Show when={latest()}>
+          {(snapshot) => (
+            <div {...sx(historyStyles.metrics)}>
+              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Attention</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.attention)}</div></div>
+              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Velocity</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.velocity)}</div></div>
+              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Source breadth</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.source_breadth)}</div></div>
+              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Confidence</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.confidence)}</div></div>
+            </div>
+          )}
+        </Show>
+      </Show>
+    </div>
+  );
 }
 
 export function HomePage() {
@@ -78,9 +121,9 @@ export function HomePage() {
           <p {...sx(styles.heroCopy)}>Trendinary scans public signals across the web to find what is accelerating, explain why it matters, and show you what everyone else is about to talk about.</p>
         </div>
         <div {...sx(styles.statusCard)}>
-          <div {...sx(styles.statusLabel)}>Internet temperature</div>
-          <div {...sx(styles.statusValue)}>VERY ONLINE</div>
-          <div {...sx(styles.statusSub)}>The UI is now backed by the Go API. Live ingestion and calculated scores are the next data-engine milestone.</div>
+          <div {...sx(styles.statusLabel)}>Scanner status</div>
+          <div {...sx(styles.statusValue)}>LIVE BASELINES</div>
+          <div {...sx(styles.statusSub)}>The Go scanner records live source observations, compares them with stored history, and publishes a versioned Trendinary Score.</div>
         </div>
       </section>
       <ProductTabs />
@@ -133,7 +176,7 @@ export function FomoPage() {
       <ProductTabs />
       <section {...sx(styles.section)}>
         <div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>What you missed</h2><p {...sx(styles.sectionCopy)}>A briefing, not another infinite feed.</p></div></div>
-        <For each={missed}>{(item) => <div {...sx(styles.fomoRow)}><div {...sx(styles.fomoTime)}>{item.peak}</div><div><div {...sx(styles.trendName)}>{item.name}</div><p {...sx(styles.cardCopy)}>{item.summary}</p></div><a {...sx(styles.headerAction)} href="/trend/at-protocol">Get the lore →</a></div>}</For>
+        <For each={missed}>{(item) => <div {...sx(styles.fomoRow)}><div {...sx(styles.fomoTime)}>{item.peak}</div><div><div {...sx(styles.trendName)}>{item.name}</div><p {...sx(styles.cardCopy)}>{item.summary}</p></div><a {...sx(styles.headerAction)} href="/">See what's live →</a></div>}</For>
       </section>
     </>
   );
@@ -147,7 +190,7 @@ export function FollowingPage() {
         <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Radar status</div><div {...sx(styles.statusValue)}>QUIET</div><div {...sx(styles.statusSub)}>Accounts and persistent follows are not wired yet. The product rule stays: quiet is valid output.</div></div>
       </section>
       <ProductTabs />
-      <section {...sx(styles.section)}><div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>YOUR INTERNET, WITHOUT THE FEED</div><h2 {...sx(styles.sectionTitle)}>Follow your first topic.</h2><p {...sx(styles.heroCopy)} style={{ margin: "12px auto 22px" }}>Try AT Protocol, SolidJS, an NFL team, a company, or your favorite game. We'll build the radar view here.</p><a {...sx(styles.followButton)} href="/trend/at-protocol">Follow AT Protocol</a></div></section>
+      <section {...sx(styles.section)}><div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>YOUR INTERNET, WITHOUT THE FEED</div><h2 {...sx(styles.sectionTitle)}>Follow your first topic.</h2><p {...sx(styles.heroCopy)} style={{ margin: "12px auto 22px" }}>Open any live trend and follow it once identity/persistence lands. This page will become your abnormal-activity radar.</p><a {...sx(styles.followButton)} href="/">Browse live trends</a></div></section>
     </>
   );
 }
@@ -155,13 +198,18 @@ export function FollowingPage() {
 export function TrendPage() {
   const params = useParams();
   const [trend, setTrend] = createSignal<Trend>();
+  const [history, setHistory] = createSignal<TrendSnapshot[]>([]);
   const [error, setError] = createSignal<string>();
+  const [historyError, setHistoryError] = createSignal<string>();
   const slug = params.slug;
 
   if (slug) {
     void fetchTrend(slug)
       .then((value) => setTrend(value))
       .catch((reason) => setError(message(reason)));
+    void fetchTrendHistory(slug)
+      .then((value) => setHistory(value))
+      .catch((reason) => setHistoryError(message(reason)));
   } else {
     setError("Missing trend slug.");
   }
@@ -177,6 +225,10 @@ export function TrendPage() {
               <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Trendinary score</div><div {...sx(styles.scoreBig)}>{current().score}</div><div {...sx(styles.change)} style={{ "text-align": "left", "margin-top": "8px" }}>{current().change} velocity</div><div {...sx(styles.statusSub)} style={{ "margin-top": "14px" }}>VIBE: {current().vibe}</div></div>
             </section>
             <div {...sx(styles.actionGrid)}><a {...sx(styles.actionCard)} href="#wtf">WTF?<span {...sx(styles.actionLabel)}>Why's this trending?</span></a><a {...sx(styles.actionCard)} href="#lore">LORE<span {...sx(styles.actionLabel)}>Give me the backstory.</span></a><a {...sx(styles.actionCard)} href="#vibe">VIBE<span {...sx(styles.actionLabel)}>What does it feel like?</span></a><a {...sx(styles.actionCard)} href="#timeline">TIMELINE<span {...sx(styles.actionLabel)}>How did it spread?</span></a></div>
+            <section {...sx(styles.section)}>
+              <div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>Momentum</h2><p {...sx(styles.sectionCopy)}>Persisted observations, not a decorative sparkline.</p></div><div {...sx(styles.eyebrow)}>SCORE HISTORY</div></div>
+              <TrendHistoryPanel items={history()} error={historyError()} />
+            </section>
             <section {...sx(styles.twoCol)}>
               <div {...sx(styles.whyBox)} id="wtf"><div {...sx(styles.eyebrow)}>WTF? · WHY'S THIS TRENDING?</div><h2 {...sx(styles.whyTitle)}>{current().reason}</h2><p {...sx(styles.whyCopy)}>{current().why ?? "Trendinary has detected the cluster, but a sourced explanation has not been generated yet."}</p></div>
               <div {...sx(styles.card)} id="vibe"><div {...sx(styles.cardKicker)}>VIBE CHECK</div><h3 {...sx(styles.cardTitle)}>{current().vibe}</h3><p {...sx(styles.cardCopy)}>VIBE is intentionally qualitative. It summarizes the shape of the conversation without pretending sentiment percentages are objective measurements.</p></div>

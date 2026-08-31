@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	"github.com/chrisbirster/trendinary/internal/signals"
@@ -18,23 +20,39 @@ type Server struct {
 	frontend http.Handler
 	hn       *hackernews.Client
 	bluesky  *bluesky.Client
+	history  *history.Store
 }
 
-func New(s *store.Memory, frontend http.Handler) http.Handler {
+type Option func(*Server)
+
+func WithHistory(historical *history.Store) Option {
+	return func(server *Server) {
+		server.history = historical
+	}
+}
+
+func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler {
 	server := &Server{
 		store:    s,
 		frontend: frontend,
 		hn:       hackernews.NewClient(nil),
 		bluesky:  bluesky.NewClient(nil),
 	}
+	for _, option := range options {
+		if option != nil {
+			option(server)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
 	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
 	mux.HandleFunc("GET /api/v1/signals/hacker-news", server.hackerNewsSignals)
 	mux.HandleFunc("GET /api/v1/signals/bluesky", server.blueskySignals)
 	mux.HandleFunc("GET /api/v1/sources/{domain}", server.source)
 	mux.HandleFunc("GET /api/v1/methodology/bias", server.biasMethodology)
+	mux.HandleFunc("GET /api/v1/methodology/score", server.scoreMethodology)
 	mux.Handle("/", frontend)
 	return withHeaders(mux)
 }
@@ -45,6 +63,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"service": "trendinary",
 		"version": "v1",
 		"time":    time.Now().UTC().Format(time.RFC3339),
+		"history": s.history != nil,
 	})
 }
 
@@ -59,6 +78,32 @@ func (s *Server) trend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": trend})
+}
+
+func (s *Server) trendHistory(w http.ResponseWriter, r *http.Request) {
+	if s.history == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "trend history is not configured"})
+		return
+	}
+	limit, ok := queryLimit(w, r, 48, 500)
+	if !ok {
+		return
+	}
+	snapshots, err := s.history.RecentSnapshots(r.Context(), r.PathValue("slug"), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend history unavailable"})
+		return
+	}
+	// SQLite returns newest-first for efficient LIMIT queries; the API returns
+	// chronological order so clients can render charts without re-sorting.
+	for left, right := 0, len(snapshots)-1; left < right; left, right = left+1, right-1 {
+		snapshots[left], snapshots[right] = snapshots[right], snapshots[left]
+	}
+	w.Header().Set("Cache-Control", "public, max-age=15, stale-while-revalidate=30")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": snapshots,
+		"meta": map[string]any{"trend_key": r.PathValue("slug"), "score_version": engine.ScoreVersion},
+	})
 }
 
 func (s *Server) hackerNewsSignals(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +175,25 @@ func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 				"Keep source leaning separate from the stance or claims of an individual article.",
 			},
 			"initial_provider": "AllSides",
+		},
+	})
+}
+
+func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"version": engine.ScoreVersion,
+			"range":   "0-100",
+			"principle": "Score unexpected attention, not fame. Metrics are normalized against historical baselines before entering the scoring function.",
+			"weights": map[string]float64{
+				"attention":         0.20,
+				"velocity":          0.30,
+				"source_breadth":    0.18,
+				"community_breadth": 0.12,
+				"novelty":           0.12,
+				"confidence":        0.08,
+			},
+			"warning": "Version 0.1 is an explicit starting model. Thresholds will be calibrated against stored historical outcomes rather than optimized for engagement.",
 		},
 	})
 }
