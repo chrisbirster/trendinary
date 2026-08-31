@@ -16,19 +16,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.0"
+          cache-dependency-path: go.sum
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
       - run: npm install
-      - name: Resolve Go modules
+      - name: Verify Go module lock files
         run: |
           go mod tidy
-          echo "TRENDINARY_GO_MOD_BEGIN"
-          cat go.mod
-          echo "TRENDINARY_GO_MOD_END"
-          echo "TRENDINARY_GO_SUM_BASE64_BEGIN"
-          base64 -w0 go.sum
-          echo
-          echo "TRENDINARY_GO_SUM_BASE64_END"
+          git diff --exit-code -- go.mod go.sum
       - run: npm run verify
       - run: docker build -t trendinary:ci .
