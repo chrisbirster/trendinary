@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/chrisbirster/trendinary/internal/engine"
 	"github.com/chrisbirster/trendinary/internal/httpapi"
 	"github.com/chrisbirster/trendinary/internal/store"
 )
@@ -65,5 +66,31 @@ func TestBiasMetadataPreservesProvider(t *testing.T) {
 	}
 	if payload.Data.Bias.Label != "right" || payload.Data.Bias.Provider != "AllSides" {
 		t.Fatalf("unexpected bias metadata: %+v", payload.Data.Bias)
+	}
+}
+
+func TestScoreMethodologyIsVersionedAndTransparent(t *testing.T) {
+	handler := httpapi.New(store.NewMemory(), http.NotFoundHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/methodology/score", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", res.Code, http.StatusOK)
+	}
+	var payload struct {
+		Data struct {
+			Version string             `json:"version"`
+			Weights map[string]float64 `json:"weights"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Version != engine.ScoreVersion {
+		t.Fatalf("version = %q, want %q", payload.Data.Version, engine.ScoreVersion)
+	}
+	if payload.Data.Weights["velocity"] <= payload.Data.Weights["attention"] {
+		t.Fatalf("velocity should outweigh raw attention: %+v", payload.Data.Weights)
 	}
 }
