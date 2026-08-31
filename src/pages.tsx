@@ -1,4 +1,4 @@
-import { createResource, For, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
 import * as stylex from "@stylexjs/stylex";
 import { fetchTrend, fetchTrends, type Trend } from "./api";
@@ -6,6 +6,23 @@ import { missed } from "./data";
 import { styles } from "./styles.stylex";
 
 const sx = stylex.attrs;
+
+function message(reason: unknown) {
+  return reason instanceof Error ? reason.message : "Something went wrong.";
+}
+
+function useTrendList() {
+  const [items, setItems] = createSignal<Trend[]>([]);
+  const [loading, setLoading] = createSignal(true);
+  const [error, setError] = createSignal<string>();
+
+  void fetchTrends()
+    .then((value) => setItems(value))
+    .catch((reason) => setError(message(reason)))
+    .finally(() => setLoading(false));
+
+  return { items, loading, error };
+}
 
 function TrendRows(props: { items: Trend[] }) {
   return (
@@ -45,8 +62,12 @@ function LoadingScoreboard() {
   return <div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>SCAN IN PROGRESS</div><h2 {...sx(styles.sectionTitle)}>Reading the internet…</h2></div>;
 }
 
+function ApiError(props: { value?: string }) {
+  return <Show when={props.value}>{(value) => <div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>SCAN INTERRUPTED</div><h2 {...sx(styles.sectionTitle)}>{value()}</h2></div>}</Show>;
+}
+
 export function HomePage() {
-  const [trends] = createResource(fetchTrends, { initialValue: [] });
+  const trends = useTrendList();
 
   return (
     <>
@@ -66,10 +87,11 @@ export function HomePage() {
       <section {...sx(styles.section)}>
         <div {...sx(styles.sectionHeader)}>
           <div><h2 {...sx(styles.sectionTitle)}>Happening now</h2><p {...sx(styles.sectionCopy)}>Ranked by attention × velocity × breadth × novelty.</p></div>
-          <div {...sx(styles.eyebrow)}>{trends.loading ? "SCANNING" : "API CONNECTED"}</div>
+          <div {...sx(styles.eyebrow)}>{trends.loading() ? "SCANNING" : "API CONNECTED"}</div>
         </div>
-        <Show when={!trends.loading || trends().length > 0} fallback={<LoadingScoreboard />}>
-          <TrendRows items={trends()} />
+        <ApiError value={trends.error()} />
+        <Show when={!trends.loading()} fallback={<LoadingScoreboard />}>
+          <TrendRows items={trends.items()} />
         </Show>
       </section>
       <section {...sx(styles.section)}>
@@ -85,8 +107,8 @@ export function HomePage() {
 }
 
 export function PeepPage() {
-  const [trends] = createResource(fetchTrends, { initialValue: [] });
-  const emerging = () => trends().filter((trend) => trend.status === "EMERGING" || trend.status === "RISING").slice(0, 4);
+  const trends = useTrendList();
+  const emerging = () => trends.items().filter((trend: Trend) => trend.status === "EMERGING" || trend.status === "RISING").slice(0, 4);
 
   return (
     <>
@@ -95,7 +117,7 @@ export function PeepPage() {
         <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>PEEP rule</div><div {...sx(styles.statusValue)}>WATCH THE SLOPE</div><div {...sx(styles.statusSub)}>Absolute popularity is late. PEEP prioritizes unusual acceleration and cross-community spread.</div></div>
       </section>
       <ProductTabs />
-      <section {...sx(styles.section)}><div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>Emerging now</h2><p {...sx(styles.sectionCopy)}>Low baseline. High acceleration. Maximum “what is this?” energy.</p></div></div><TrendRows items={emerging()} /></section>
+      <section {...sx(styles.section)}><div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>Emerging now</h2><p {...sx(styles.sectionCopy)}>Low baseline. High acceleration. Maximum “what is this?” energy.</p></div></div><ApiError value={trends.error()} /><Show when={!trends.loading()} fallback={<LoadingScoreboard />}><TrendRows items={emerging()} /></Show></section>
       <section {...sx(styles.section)}><div {...sx(styles.grid3)}><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>WHY PEEP EXISTS</div><h3 {...sx(styles.cardTitle)}>Popularity is late.</h3><p {...sx(styles.cardCopy)}>A leaderboard tells you what already won. PEEP focuses on what is suddenly moving much faster than normal.</p></div><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>SIGNAL</div><h3 {...sx(styles.cardTitle)}>Crossing communities</h3><p {...sx(styles.cardCopy)}>A topic gets more interesting when it jumps from one community into several unrelated ones.</p></div><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>NOISE FILTER</div><h3 {...sx(styles.cardTitle)}>Not every spike matters.</h3><p {...sx(styles.cardCopy)}>Trendinary should separate coordinated spam and recurring chatter from genuine unusual attention.</p></div></div></section>
     </>
   );
@@ -132,27 +154,35 @@ export function FollowingPage() {
 
 export function TrendPage() {
   const params = useParams();
-  const [trend] = createResource(() => params.slug, fetchTrend);
+  const [trend, setTrend] = createSignal<Trend>();
+  const [error, setError] = createSignal<string>();
+
+  void fetchTrend(params.slug)
+    .then((value) => setTrend(value))
+    .catch((reason) => setError(message(reason)));
 
   return (
-    <Show when={trend()} fallback={<LoadingScoreboard />}>
-      {(current) => (
-        <>
-          <section {...sx(styles.detailHero)}>
-            <div><div {...sx(styles.eyebrow)}>{current().category} · {current().status} · STARTED {current().started}</div><h1 {...sx(styles.detailTitle)}>{current().name}</h1><p {...sx(styles.heroCopy)}>{current().reason}</p><div {...sx(styles.chips)}><For each={current().sources}>{(source) => <a href={source.url} {...sx(styles.chip)}>{source.name}{source.bias ? ` · ${source.bias.label.toUpperCase()}` : ""}</a>}</For></div></div>
-            <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Trendinary score</div><div {...sx(styles.scoreBig)}>{current().score}</div><div {...sx(styles.change)} style={{ "text-align": "left", "margin-top": "8px" }}>{current().change} velocity</div><div {...sx(styles.statusSub)} style={{ "margin-top": "14px" }}>VIBE: {current().vibe}</div></div>
-          </section>
-          <div {...sx(styles.actionGrid)}><a {...sx(styles.actionCard)} href="#wtf">WTF?<span {...sx(styles.actionLabel)}>Why's this trending?</span></a><a {...sx(styles.actionCard)} href="#lore">LORE<span {...sx(styles.actionLabel)}>Give me the backstory.</span></a><a {...sx(styles.actionCard)} href="#vibe">VIBE<span {...sx(styles.actionLabel)}>What does it feel like?</span></a><a {...sx(styles.actionCard)} href="#timeline">TIMELINE<span {...sx(styles.actionLabel)}>How did it spread?</span></a></div>
-          <section {...sx(styles.twoCol)}>
-            <div {...sx(styles.whyBox)} id="wtf"><div {...sx(styles.eyebrow)}>WTF? · WHY'S THIS TRENDING?</div><h2 {...sx(styles.whyTitle)}>{current().reason}</h2><p {...sx(styles.whyCopy)}>{current().why ?? "Trendinary has detected the cluster, but a sourced explanation has not been generated yet."}</p></div>
-            <div {...sx(styles.card)} id="vibe"><div {...sx(styles.cardKicker)}>VIBE CHECK</div><h3 {...sx(styles.cardTitle)}>{current().vibe}</h3><p {...sx(styles.cardCopy)}>VIBE is intentionally qualitative. It summarizes the shape of the conversation without pretending sentiment percentages are objective measurements.</p></div>
-          </section>
-          <section {...sx(styles.section)} id="timeline"><div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>How it spread</h2><p {...sx(styles.sectionCopy)}>A reconstructed attention timeline across public sources.</p></div></div><div {...sx(styles.timeline)}><For each={current().timeline ?? []}>{(item) => <div {...sx(styles.timelineItem)}><div {...sx(styles.timelineTime)}>{item.time}</div><div><div {...sx(styles.timelineTitle)}>{item.label}</div><div {...sx(styles.timelineCopy)}>{item.text}</div></div></div>}</For></div></section>
-          <section {...sx(styles.section)} id="lore"><div {...sx(styles.twoCol)}><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>THE LORE</div><h3 {...sx(styles.cardTitle)}>The context that existed before today's spike.</h3><p {...sx(styles.cardCopy)}>{current().lore ?? "Lore is being assembled from durable, sourced context."}</p></div><div {...sx(styles.ask)}><div {...sx(styles.cardKicker)}>ASK TRENDINARY</div><input {...sx(styles.askInput)} placeholder={`Ask anything about ${current().name}…`} /><div {...sx(styles.askSuggestions)}><button {...sx(styles.smallButton)}>Explain like I'm five</button><button {...sx(styles.smallButton)}>Why should I care?</button><button {...sx(styles.smallButton)}>Show the skeptical take</button></div></div></div></section>
-          <section {...sx(styles.section)}><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>SOURCE LENS</div><h3 {...sx(styles.cardTitle)}>Bias is metadata, not a verdict.</h3><p {...sx(styles.cardCopy)}>When a news source has an evidence-backed political-lean assessment, Trendinary will show the provider, confidence, scope, and methodology. Unrated sources stay unrated; article stance and source-level leaning remain separate concepts.</p></div></section>
-        </>
-      )}
-    </Show>
+    <>
+      <ApiError value={error()} />
+      <Show when={trend()} fallback={<LoadingScoreboard />}>
+        {(current) => (
+          <>
+            <section {...sx(styles.detailHero)}>
+              <div><div {...sx(styles.eyebrow)}>{current().category} · {current().status} · STARTED {current().started}</div><h1 {...sx(styles.detailTitle)}>{current().name}</h1><p {...sx(styles.heroCopy)}>{current().reason}</p><div {...sx(styles.chips)}><For each={current().sources}>{(source) => <a href={source.url} {...sx(styles.chip)}>{source.name}{source.bias ? ` · ${source.bias.label.toUpperCase()}` : ""}</a>}</For></div></div>
+              <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Trendinary score</div><div {...sx(styles.scoreBig)}>{current().score}</div><div {...sx(styles.change)} style={{ "text-align": "left", "margin-top": "8px" }}>{current().change} velocity</div><div {...sx(styles.statusSub)} style={{ "margin-top": "14px" }}>VIBE: {current().vibe}</div></div>
+            </section>
+            <div {...sx(styles.actionGrid)}><a {...sx(styles.actionCard)} href="#wtf">WTF?<span {...sx(styles.actionLabel)}>Why's this trending?</span></a><a {...sx(styles.actionCard)} href="#lore">LORE<span {...sx(styles.actionLabel)}>Give me the backstory.</span></a><a {...sx(styles.actionCard)} href="#vibe">VIBE<span {...sx(styles.actionLabel)}>What does it feel like?</span></a><a {...sx(styles.actionCard)} href="#timeline">TIMELINE<span {...sx(styles.actionLabel)}>How did it spread?</span></a></div>
+            <section {...sx(styles.twoCol)}>
+              <div {...sx(styles.whyBox)} id="wtf"><div {...sx(styles.eyebrow)}>WTF? · WHY'S THIS TRENDING?</div><h2 {...sx(styles.whyTitle)}>{current().reason}</h2><p {...sx(styles.whyCopy)}>{current().why ?? "Trendinary has detected the cluster, but a sourced explanation has not been generated yet."}</p></div>
+              <div {...sx(styles.card)} id="vibe"><div {...sx(styles.cardKicker)}>VIBE CHECK</div><h3 {...sx(styles.cardTitle)}>{current().vibe}</h3><p {...sx(styles.cardCopy)}>VIBE is intentionally qualitative. It summarizes the shape of the conversation without pretending sentiment percentages are objective measurements.</p></div>
+            </section>
+            <section {...sx(styles.section)} id="timeline"><div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>How it spread</h2><p {...sx(styles.sectionCopy)}>A reconstructed attention timeline across public sources.</p></div></div><div {...sx(styles.timeline)}><For each={current().timeline ?? []}>{(item) => <div {...sx(styles.timelineItem)}><div {...sx(styles.timelineTime)}>{item.time}</div><div><div {...sx(styles.timelineTitle)}>{item.label}</div><div {...sx(styles.timelineCopy)}>{item.text}</div></div></div>}</For></div></section>
+            <section {...sx(styles.section)} id="lore"><div {...sx(styles.twoCol)}><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>THE LORE</div><h3 {...sx(styles.cardTitle)}>The context that existed before today's spike.</h3><p {...sx(styles.cardCopy)}>{current().lore ?? "Lore is being assembled from durable, sourced context."}</p></div><div {...sx(styles.ask)}><div {...sx(styles.cardKicker)}>ASK TRENDINARY</div><input {...sx(styles.askInput)} placeholder={`Ask anything about ${current().name}…`} /><div {...sx(styles.askSuggestions)}><button {...sx(styles.smallButton)}>Explain like I'm five</button><button {...sx(styles.smallButton)}>Why should I care?</button><button {...sx(styles.smallButton)}>Show the skeptical take</button></div></div></div></section>
+            <section {...sx(styles.section)}><div {...sx(styles.card)}><div {...sx(styles.cardKicker)}>SOURCE LENS</div><h3 {...sx(styles.cardTitle)}>Bias is metadata, not a verdict.</h3><p {...sx(styles.cardCopy)}>When a news source has an evidence-backed political-lean assessment, Trendinary will show the provider, confidence, scope, and methodology. Unrated sources stay unrated; article stance and source-level leaning remain separate concepts.</p></div></section>
+          </>
+        )}
+      </Show>
+    </>
   );
 }
 
