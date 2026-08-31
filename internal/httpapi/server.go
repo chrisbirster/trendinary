@@ -59,6 +59,9 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/propagation", server.trendPropagation)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/explanation", server.trendExplanation)
+	mux.HandleFunc("POST /api/v1/trends/{slug}/ask", server.askTrend)
 	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
 	mux.HandleFunc("GET /api/v1/signals/hacker-news", server.hackerNewsSignals)
 	mux.HandleFunc("GET /api/v1/signals/bluesky", server.blueskySignals)
@@ -127,20 +130,23 @@ func (s *Server) trendHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	snapshots, err := s.history.RecentSnapshots(r.Context(), r.PathValue("slug"), limit)
+	trendKey, err := s.history.ResolveTrendKey(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend identity unavailable"})
+		return
+	}
+	snapshots, err := s.history.RecentSnapshots(r.Context(), trendKey, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend history unavailable"})
 		return
 	}
-	// SQLite returns newest-first for efficient LIMIT queries; the API returns
-	// chronological order so clients can render charts without re-sorting.
 	for left, right := 0, len(snapshots)-1; left < right; left, right = left+1, right-1 {
 		snapshots[left], snapshots[right] = snapshots[right], snapshots[left]
 	}
 	w.Header().Set("Cache-Control", "public, max-age=15, stale-while-revalidate=30")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": snapshots,
-		"meta": map[string]any{"trend_key": r.PathValue("slug"), "score_version": engine.ScoreVersion},
+		"meta": map[string]any{"trend_key": trendKey, "slug": r.PathValue("slug"), "score_version": engine.ScoreVersion},
 	})
 }
 
@@ -204,7 +210,7 @@ func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level political label from a single article.",
+			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level label from a single article.",
 			"labels": []string{"left", "lean-left", "center", "lean-right", "right", "mixed", "not-rated"},
 			"display_rules": []string{
 				"Always display the rating provider and confidence when a political leaning label is shown.",
