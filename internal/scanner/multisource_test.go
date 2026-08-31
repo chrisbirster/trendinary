@@ -65,7 +65,7 @@ func TestRunWithRecentDiscoversTrendWithoutHackerNews(t *testing.T) {
 	}
 }
 
-func TestRunWithRecentSurvivesHackerNewsFailure(t *testing.T) {
+func TestRunWithRecentRejectsSingleAuthorStreamCluster(t *testing.T) {
 	historical, err := history.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,45 @@ func TestRunWithRecentSurvivesHackerNewsFailure(t *testing.T) {
 		Author: "did:plc:a",
 	}, time.Now().UTC())
 
-	s := scanner.New(failingHN{}, nil, historical, memory, scanner.Config{PublishedTrendLimit: 10})
+	s := scanner.New(nil, nil, historical, memory, scanner.Config{PublishedTrendLimit: 10})
+	result, err := s.RunWithRecent(context.Background(), window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trends != 0 || result.Clusters != 0 || len(result.Warnings) == 0 {
+		t.Fatalf("singleton stream post should not become a trend: %+v", result)
+	}
+	if len(memory.Trends()) != 0 {
+		t.Fatalf("singleton stream post published a trend: %+v", memory.Trends())
+	}
+}
+
+func TestRunWithRecentSurvivesHackerNewsFailure(t *testing.T) {
+	historical, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer historical.Close()
+
+	memory := store.NewMemory()
+	window := recent.New(100, time.Hour)
+	now := time.Now().UTC()
+	window.UpsertMany([]model.Signal{
+		{
+			ID: "bsky:at://did:plc:a/app.bsky.feed.post/1",
+			Source: model.Source{Name: "Bluesky", Domain: "bsky.app"},
+			Text: "A strange new internet meme is spreading quickly",
+			Author: "did:plc:a",
+		},
+		{
+			ID: "bsky:at://did:plc:b/app.bsky.feed.post/2",
+			Source: model.Source{Name: "Bluesky", Domain: "bsky.app"},
+			Text: "The strange new internet meme is spreading",
+			Author: "did:plc:b",
+		},
+	}, now)
+
+	s := scanner.New(failingHN{}, nil, historical, memory, scanner.Config{PublishedTrendLimit: 10, ClusterThreshold: 0.35})
 	result, err := s.RunWithRecent(context.Background(), window)
 	if err != nil {
 		t.Fatal(err)
