@@ -54,7 +54,6 @@ function ProductTabs() {
       <a {...sx(styles.tab)} href="/peep">PEEP 👀</a>
       <a {...sx(styles.tab)} href="/fomo">FOMO</a>
       <a {...sx(styles.tab)} href="/following">Following</a>
-      <a {...sx(styles.tab)} href="/trend/at-protocol">WTF?</a>
     </div>
   );
 }
@@ -124,7 +123,7 @@ export function HomePage() {
         <div {...sx(styles.statusCard)}>
           <div {...sx(styles.statusLabel)}>Scanner status</div>
           <div {...sx(styles.statusValue)}>LIVE BASELINES</div>
-          <div {...sx(styles.statusSub)}>The Go scanner now records live source observations, compares them with stored history, and publishes a versioned Trendinary Score.</div>
+          <div {...sx(styles.statusSub)}>The Go scanner records live source observations, compares them with stored history, and publishes a versioned Trendinary Score.</div>
         </div>
       </section>
       <ProductTabs />
@@ -177,7 +176,7 @@ export function FomoPage() {
       <ProductTabs />
       <section {...sx(styles.section)}>
         <div {...sx(styles.sectionHeader)}><div><h2 {...sx(styles.sectionTitle)}>What you missed</h2><p {...sx(styles.sectionCopy)}>A briefing, not another infinite feed.</p></div></div>
-        <For each={missed}>{(item) => <div {...sx(styles.fomoRow)}><div {...sx(styles.fomoTime)}>{item.peak}</div><div><div {...sx(styles.trendName)}>{item.name}</div><p {...sx(styles.cardCopy)}>{item.summary}</p></div><a {...sx(styles.headerAction)} href="/trend/at-protocol">Get the lore →</a></div>}</For>
+        <For each={missed}>{(item) => <div {...sx(styles.fomoRow)}><div {...sx(styles.fomoTime)}>{item.peak}</div><div><div {...sx(styles.trendName)}>{item.name}</div><p {...sx(styles.cardCopy)}>{item.summary}</p></div><a {...sx(styles.headerAction)} href="/">See what's live →</a></div>}</For>
       </section>
     </>
   );
@@ -191,7 +190,7 @@ export function FollowingPage() {
         <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Radar status</div><div {...sx(styles.statusValue)}>QUIET</div><div {...sx(styles.statusSub)}>Accounts and persistent follows are not wired yet. The product rule stays: quiet is valid output.</div></div>
       </section>
       <ProductTabs />
-      <section {...sx(styles.section)}><div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>YOUR INTERNET, WITHOUT THE FEED</div><h2 {...sx(styles.sectionTitle)}>Follow your first topic.</h2><p {...sx(styles.heroCopy)} style={{ margin: "12px auto 22px" }}>Try AT Protocol, SolidJS, an NFL team, a company, or your favorite game. We'll build the radar view here.</p><a {...sx(styles.followButton)} href="/trend/at-protocol">Follow AT Protocol</a></div></section>
+      <section {...sx(styles.section)}><div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>YOUR INTERNET, WITHOUT THE FEED</div><h2 {...sx(styles.sectionTitle)}>Follow your first topic.</h2><p {...sx(styles.heroCopy)} style={{ margin: "12px auto 22px" }}>Open any live trend and follow it once identity/persistence lands. This page will become your abnormal-activity radar.</p><a {...sx(styles.followButton)} href="/">Browse live trends</a></div></section>
     </>
   );
 }
