@@ -65,7 +65,7 @@ func TestRunWithRecentDiscoversTrendWithoutHackerNews(t *testing.T) {
 	}
 }
 
-func TestRunWithRecentRejectsSingleAuthorStreamCluster(t *testing.T) {
+func TestRunWithRecentRejectsSingleAuthorStreamClusterAndPreservesLastGoodView(t *testing.T) {
 	historical, err := history.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +73,7 @@ func TestRunWithRecentRejectsSingleAuthorStreamCluster(t *testing.T) {
 	defer historical.Close()
 
 	memory := store.NewMemory()
+	before := memory.Trends()
 	window := recent.New(100, time.Hour)
 	window.Upsert(model.Signal{
 		ID: "bsky:at://did:plc:a/app.bsky.feed.post/1",
@@ -89,8 +90,9 @@ func TestRunWithRecentRejectsSingleAuthorStreamCluster(t *testing.T) {
 	if result.Trends != 0 || result.Clusters != 0 || len(result.Warnings) == 0 {
 		t.Fatalf("singleton stream post should not become a trend: %+v", result)
 	}
-	if len(memory.Trends()) != 0 {
-		t.Fatalf("singleton stream post published a trend: %+v", memory.Trends())
+	after := memory.Trends()
+	if len(after) != len(before) || len(after) == 0 || after[0].Slug != before[0].Slug {
+		t.Fatalf("last good trend view should be preserved; before=%+v after=%+v", before, after)
 	}
 }
 
