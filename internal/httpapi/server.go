@@ -210,7 +210,7 @@ func (s *Server) source(w http.ResponseWriter, r *http.Request) {
 func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level label from a single article.",
+			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level political label from a single article.",
 			"labels": []string{"left", "lean-left", "center", "lean-right", "right", "mixed", "not-rated"},
 			"display_rules": []string{
 				"Always display the rating provider and confidence when a political leaning label is shown.",
