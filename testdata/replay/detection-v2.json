@@ -1,0 +1,54 @@
+{
+  "name": "detection-v2-smoke",
+  "signals": [
+    {
+      "group": "atproto",
+      "signal": {
+        "id": "fixture:atproto:1",
+        "source": {"name": "Hacker News", "domain": "news.ycombinator.com"},
+        "title": "AT Protocol adoption expands with new developer tooling",
+        "url": "https://example.com/atproto-tooling",
+        "engagement": {"score": 120}
+      }
+    },
+    {
+      "group": "atproto",
+      "signal": {
+        "id": "fixture:atproto:2",
+        "source": {"name": "Bluesky", "domain": "bsky.app"},
+        "title": "Developers are building more ATProto tools this week",
+        "author_id": "did:plc:one",
+        "url": "https://bsky.app/profile/example/post/1"
+      }
+    },
+    {
+      "group": "roman",
+      "signal": {
+        "id": "fixture:roman:1",
+        "source": {"name": "Wikipedia", "domain": "wikipedia.org"},
+        "title": "Nancy Grace Roman Space Telescope",
+        "url": "https://en.wikipedia.org/wiki/Nancy_Grace_Roman_Space_Telescope",
+        "engagement": {"score": 50000}
+      }
+    },
+    {
+      "group": "roman",
+      "signal": {
+        "id": "fixture:roman:2",
+        "source": {"name": "Tech News", "domain": "example.org"},
+        "title": "Roman Space Telescope launches after years of preparation",
+        "url": "https://example.org/roman-launch"
+      }
+    },
+    {
+      "group": "unrelated",
+      "signal": {
+        "id": "fixture:sqlite:1",
+        "source": {"name": "GitHub", "domain": "github.com"},
+        "title": "DoltLite brings version control ideas to SQLite",
+        "url": "https://github.com/example/doltlite",
+        "engagement": {"score": 80}
+      }
+    }
+  ]
+}

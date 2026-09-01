@@ -4,12 +4,18 @@ This train turns Trendinary's Jetstream foundation into a cross-network attentio
 
 ## Discovery
 
-Current discovery sources:
+Current public discovery sources:
 
 - Hacker News
 - AT Protocol / Bluesky Jetstream v2
 - GitHub repository search
-- Reddit OAuth Data API when approved credentials are configured
+- RSS / Atom feeds
+- Wikipedia pageviews
+- GDELT DOC
+- YouTube when an API key is configured
+- quota-aware NewsData when an API key is configured
+
+Direct Reddit API ingestion is no longer an active dependency. Reddit-adjacent discoveries can arrive through TechURLs or original-publisher discovery.
 
 All sources normalize into the same `Signal` model before clustering and scoring.
 
@@ -20,10 +26,12 @@ All sources normalize into the same `Signal` model before clustering and scoring
 - Lexical clustering is capped to the newest 1,500 streaming signals per pass.
 - At most the strongest 100 candidate clusters proceed to scoring.
 - Candidate Bluesky posts are selectively hydrated through AppView for engagement counters; the firehose itself remains cheap.
+- Delayed NewsData observations are corroborative-only and cannot independently promote a trend.
+- Detection Quality v2 applies source/author flood limits and repeated-text suppression before scoring.
 
 ## Identity
 
-Lexical wording is not the public identity of a trend. SQLite persists stable trend entities, aliases, canonical terms, and slugs. A later scan can reconnect to the same entity even when the cluster wording changes.
+Lexical wording is not the public identity of a trend. Turso persists stable trend entities, aliases, canonical terms, and slugs. A later scan can reconnect to the same entity even when the cluster wording changes.
 
 ## Source Lens
 
@@ -36,6 +44,10 @@ Trendinary records source observations over time and exposes an ordered propagat
 ## Explanation
 
 `grounded-deterministic-v1` builds WTF, What Changed, Lore, evidence, and Ask responses from the measured trend object and citable source bundle. It does not require an LLM and does not invent facts outside the evidence bundle. A future model-backed implementation can use the same response contract while remaining citation constrained.
+
+## Durable state
+
+Production history, stable identity, propagation observations, API quota state, and Jetstream cursors live in Turso/libSQL. The Fly origin is stateless. Local development/tests can continue using SQLite.
 
 ## API
 
@@ -50,7 +62,8 @@ Trendinary records source observations over time and exposes an ordered propagat
 - `TRENDINARY_GITHUB_DISABLED=1` disables GitHub discovery.
 - `TRENDINARY_GITHUB_TOKEN` increases GitHub API headroom.
 - `TRENDINARY_GITHUB_LIMIT` controls GitHub candidates.
-- `TRENDINARY_REDDIT_DISABLED=1` disables Reddit discovery.
-- `TRENDINARY_REDDIT_CLIENT_ID` and `TRENDINARY_REDDIT_CLIENT_SECRET` enable Reddit OAuth discovery.
-- `TRENDINARY_REDDIT_USER_AGENT` configures the required Reddit user agent.
-- `TRENDINARY_REDDIT_LIMIT` controls Reddit candidates.
+- `TRENDINARY_RSS_FEEDS` configures publisher RSS/Atom feeds.
+- `TRENDINARY_GDELT_DISABLED=1` disables GDELT discovery.
+- `TRENDINARY_NEWSDATA_API_KEY` enables quota-aware NewsData corroboration.
+- `TRENDINARY_YOUTUBE_API_KEY` enables YouTube discovery.
+- `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` configure the production durable database.

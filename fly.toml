@@ -6,16 +6,12 @@ primary_region = "iad"
 
 [env]
   PORT = "8080"
-  TRENDINARY_DB_PATH = "/data/trendinary.db"
+  TRENDINARY_REQUIRE_TURSO = "1"
   TRENDINARY_SCAN_INTERVAL = "2m"
   TRENDINARY_HN_LIMIT = "30"
   TRENDINARY_ENRICH_CLUSTERS = "8"
   TRENDINARY_BLUESKY_LIMIT = "20"
   TRENDINARY_TREND_LIMIT = "20"
-
-[mounts]
-  source = "trendinary_data"
-  destination = "/data"
 
 [http_service]
   internal_port = 8080
