@@ -21,7 +21,6 @@ import (
 	githubdiscovery "github.com/chrisbirster/trendinary/internal/ingest/github"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	jetstreaming "github.com/chrisbirster/trendinary/internal/ingest/jetstream"
-	"github.com/chrisbirster/trendinary/internal/ingest/reddit"
 	"github.com/chrisbirster/trendinary/internal/ingest/rss"
 	"github.com/chrisbirster/trendinary/internal/ingest/wikipedia"
 	"github.com/chrisbirster/trendinary/internal/ingest/youtube"
@@ -81,7 +80,7 @@ func main() {
 			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
 			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
-			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 7),
+			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 6),
 		},
 	)
 
@@ -144,18 +143,9 @@ func main() {
 }
 
 func buildDiscoverySources() []scanner.DiscoverySource {
-	out := make([]scanner.DiscoverySource, 0, 5)
+	out := make([]scanner.DiscoverySource, 0, 4)
 	if os.Getenv("TRENDINARY_GITHUB_DISABLED") != "1" {
 		out = append(out, githubdiscovery.New(nil, os.Getenv("TRENDINARY_GITHUB_TOKEN"), envInt("TRENDINARY_GITHUB_LIMIT", 40)))
-	}
-	if os.Getenv("TRENDINARY_REDDIT_DISABLED") != "1" {
-		clientID := strings.TrimSpace(os.Getenv("TRENDINARY_REDDIT_CLIENT_ID"))
-		clientSecret := strings.TrimSpace(os.Getenv("TRENDINARY_REDDIT_CLIENT_SECRET"))
-		if clientID != "" && clientSecret != "" {
-			out = append(out, reddit.New(nil, clientID, clientSecret, envString("TRENDINARY_REDDIT_USER_AGENT", "trendinary/0.2 (+https://trendinary.com)"), envInt("TRENDINARY_REDDIT_LIMIT", 50)))
-		} else {
-			slog.Info("reddit discovery disabled because OAuth credentials are not configured")
-		}
 	}
 	if os.Getenv("TRENDINARY_RSS_DISABLED") != "1" {
 		if feeds := splitCSV(os.Getenv("TRENDINARY_RSS_FEEDS")); len(feeds) > 0 {
