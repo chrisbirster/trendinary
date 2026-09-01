@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer release version without the v prefix (for example 0.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Publish as a GitHub pre-release"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.0"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm install
+      - name: Validate release metadata
+        id: release_meta
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION_INPUT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::version must be SemVer without a v prefix"
+            exit 1
+          fi
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$VERSION_INPUT" != "$FILE_VERSION" ] || [ "$VERSION_INPUT" != "$PACKAGE_VERSION" ]; then
+            echo "::error::release input ($VERSION_INPUT), VERSION ($FILE_VERSION), and package.json ($PACKAGE_VERSION) must match"
+            exit 1
+          fi
+          if ! grep -Eq "^## \[$VERSION_INPUT\]( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no [$VERSION_INPUT] release section"
+            exit 1
+          fi
+          TAG="v$VERSION_INPUT"
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Verify Go module lock files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Verify application
+        run: npm run verify
+      - name: Verify production image
+        run: docker build -t trendinary:release .
+      - name: Extract changelog release notes
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          awk -v version="$VERSION_INPUT" '
+            $0 ~ "^## \\[" version "\\]" {found=1; next}
+            found && $0 ~ /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No release notes found for $VERSION_INPUT"
+            exit 1
+          fi
+      - name: Create annotated tag
+        env:
+          TAG: ${{ steps.release_meta.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Trendinary $TAG"
+          git push origin "$TAG"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file release-notes.md --verify-tag)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+    secrets: inherit
