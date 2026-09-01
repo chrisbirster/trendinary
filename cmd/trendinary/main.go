@@ -52,6 +52,7 @@ func main() {
 			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
 			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
+			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 4),
 		},
 	)
 
