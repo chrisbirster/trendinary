@@ -9,12 +9,13 @@ It also contains a private editorial system under `/admin` for deciding what is 
 ## Stack
 
 - Go 1.27 HTTP/API server
-- SQLite (`modernc.org/sqlite`) on a persistent Fly volume
+- Turso/libSQL as the production durable database
+- local SQLite (`modernc.org/sqlite`) for development and tests
 - SolidJS 2 + Solid Router
 - StyleX
 - Vite 8 + TypeScript
 - embedded SPA via Go `embed`
-- Fly.io origin
+- stateless Fly.io origin
 - Cloudflare Worker/DNS/KV/R2 managed through SST
 
 ## Branch and release flow
@@ -64,11 +65,13 @@ Manual ingestion:
 go run ./cmd/trendinary ingest techurls
 ```
 
-Consistent SQLite backup:
+A local SQLite database can still produce a consistent snapshot:
 
 ```bash
 go run ./cmd/trendinary backup ./trendinary-backup.db
 ```
+
+That command is intentionally unavailable when the process is connected to Turso; production recovery uses Turso point-in-time recovery/export tooling.
 
 Print current historical calibration:
 
@@ -86,7 +89,7 @@ export TRENDINARY_GDELT_QUERY='(technology OR "artificial intelligence" OR cyber
 export TRENDINARY_GDELT_LIMIT=250
 ```
 
-NewsData activates only when a key is present. Its daily calls are durably paced in SQLite rather than burned immediately:
+NewsData activates only when a key is present. Its daily calls are durably paced in the shared SQL database rather than burned immediately:
 
 ```bash
 export TRENDINARY_NEWSDATA_API_KEY='...'
@@ -116,7 +119,7 @@ Install dependencies:
 npm install
 ```
 
-Run the Go API:
+Run the Go API with local SQLite:
 
 ```bash
 npm run dev:api
@@ -136,6 +139,8 @@ To avoid connecting to ATProto during local UI work:
 TRENDINARY_JETSTREAM_DISABLED=1 npm run dev:api
 ```
 
+You can also point local development at Turso by setting `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
+
 ## Verification
 
 ```bash
@@ -146,15 +151,18 @@ CI additionally verifies the Go module lock files and builds the production Dock
 
 ## Production persistence
 
-Production SQLite lives at:
+Fly is stateless. Production requires:
 
 ```text
-/data/trendinary.db
+TURSO_DATABASE_URL
+TURSO_AUTH_TOKEN
 ```
 
-on the Fly volume named `trendinary_data`. Production deployment refuses to proceed if that volume is missing.
+`fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so production startup fails closed if Turso is not configured. No Fly volume is required.
 
-A scheduled/manual GitHub workflow creates a transactionally consistent SQLite snapshot on Fly and uploads it to the SST-managed R2 archive bucket. See `.github/workflows/backup.yml` and `docs/architecture.md`.
+Turso stores public trend history, stable identities, Jetstream cursors, quota state, and the private editorial database. R2 remains the archive target for raw source provenance/replay payloads rather than the primary database.
+
+See `docs/turso.md` and `docs/architecture.md`.
 
 ## Documentation
 
@@ -166,4 +174,5 @@ A scheduled/manual GitHub workflow creates a transactionally consistent SQLite s
 - `docs/news-discovery.md`
 - `docs/editorial-pipeline.md`
 - `docs/sources/techurls.md`
+- `docs/turso.md`
 - `docs/release-process.md`

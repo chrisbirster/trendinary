@@ -34,10 +34,9 @@ import (
 )
 
 func main() {
-	dbPath := envString("TRENDINARY_DB_PATH", "trendinary.db")
-	historical, err := history.Open(dbPath)
+	historical, storageBackend, err := openHistory()
 	if err != nil {
-		slog.Error("open history database", "path", dbPath, "error", err)
+		slog.Error("open history database", "backend", storageBackend, "error", err)
 		os.Exit(1)
 	}
 	defer historical.Close()
@@ -137,7 +136,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("trendinary listening", "addr", server.Addr, "db", dbPath, "discovery_sources", len(discoverySources)+2, "admin_enabled", os.Getenv("TRENDINARY_ADMIN_PASSWORD") != "")
+	slog.Info("trendinary listening", "addr", server.Addr, "storage", storageBackend, "discovery_sources", len(discoverySources)+2, "admin_enabled", os.Getenv("TRENDINARY_ADMIN_PASSWORD") != "")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
@@ -183,19 +182,27 @@ func buildDiscoverySources(historical *history.Store) []scanner.DiscoverySource 
 }
 
 func runCommand(ctx context.Context, historical *history.Store, editorialService *editorial.Service, args []string) (bool, error) {
-	if len(args) == 0 { return false, nil }
+	if len(args) == 0 {
+		return false, nil
+	}
 	switch args[0] {
 	case "ingest":
-		if len(args) != 2 { return true, fmt.Errorf("usage: trendinary ingest <source>") }
+		if len(args) != 2 {
+			return true, fmt.Errorf("usage: trendinary ingest <source>")
+		}
 		run, err := editorialService.Ingest(ctx, args[1])
 		_ = json.NewEncoder(os.Stdout).Encode(run)
 		return true, err
 	case "backup":
-		if len(args) != 2 { return true, fmt.Errorf("usage: trendinary backup <destination.db>") }
+		if len(args) != 2 {
+			return true, fmt.Errorf("usage: trendinary backup <destination.db>")
+		}
 		return true, historical.Backup(ctx, args[1])
 	case "calibration":
 		calibration, err := historical.Calibration(ctx, time.Now().UTC().Add(-30*24*time.Hour))
-		if err == nil { _ = json.NewEncoder(os.Stdout).Encode(calibration) }
+		if err == nil {
+			_ = json.NewEncoder(os.Stdout).Encode(calibration)
+		}
 		return true, err
 	default:
 		return false, nil
@@ -206,7 +213,9 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status
 	backoff := 2 * time.Second
 	for {
 		err := collector.Run(ctx)
-		if ctx.Err() != nil { return }
+		if ctx.Err() != nil {
+			return
+		}
 		if errors.Is(err, jetstreaming.ErrFatal) {
 			status.StreamFatal(err)
 			slog.Error("jetstream collector stopped after fatal stream error", "error", err)
@@ -215,9 +224,16 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status
 		status.StreamDisconnected(err, backoff)
 		slog.Warn("jetstream collector disconnected", "error", err, "retry_in", backoff)
 		timer := time.NewTimer(backoff)
-		select { case <-ctx.Done(): timer.Stop(); return; case <-timer.C: }
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 		backoff *= 2
-		if backoff > time.Minute { backoff = time.Minute }
+		if backoff > time.Minute {
+			backoff = time.Minute
+		}
 	}
 }
 
@@ -234,23 +250,62 @@ func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent
 		}
 		status.ScanSucceeded(time.Now().UTC(), result.Signals, result.Clusters, result.Trends, len(result.Warnings))
 		slog.Info("trend scan complete", "signals", result.Signals, "stream_window", streamWindow.Len(), "clusters", result.Clusters, "trends", result.Trends, "warnings", len(result.Warnings))
-		for _, warning := range result.Warnings { slog.Debug("trend scan warning", "warning", warning) }
+		for _, warning := range result.Warnings {
+			slog.Debug("trend scan warning", "warning", warning)
+		}
 	}
 	run()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for { select { case <-ctx.Done(): return; case <-ticker.C: run() } }
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
 
-func envString(name, fallback string) string { if value := os.Getenv(name); value != "" { return value }; return fallback }
+func envString(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
 func envInt(name string, fallback int) int {
-	value := os.Getenv(name); if value == "" { return fallback }
-	parsed, err := strconv.Atoi(value); if err != nil || parsed <= 0 { slog.Warn("invalid integer environment variable", "name", name, "value", value, "fallback", fallback); return fallback }
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		slog.Warn("invalid integer environment variable", "name", name, "value", value, "fallback", fallback)
+		return fallback
+	}
 	return parsed
 }
+
 func envDuration(name string, fallback time.Duration) time.Duration {
-	value := os.Getenv(name); if value == "" { return fallback }
-	parsed, err := time.ParseDuration(value); if err != nil || parsed < 15*time.Second { slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallback); return fallback }
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 15*time.Second {
+		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallback)
+		return fallback
+	}
 	return parsed
 }
-func splitCSV(value string) []string { out:=[]string{}; for _,part:=range strings.Split(value,","){if trimmed:=strings.TrimSpace(part);trimmed!=""{out=append(out,trimmed)}};return out }
+
+func splitCSV(value string) []string {
+	out := []string{}
+	for _, part := range strings.Split(value, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}

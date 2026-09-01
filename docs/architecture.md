@@ -2,7 +2,7 @@
 
 ## Runtime shape
 
-Trendinary ships as one Go binary behind a thin Cloudflare edge.
+Trendinary ships as one stateless Go binary behind a thin Cloudflare edge, with Turso/libSQL as the durable production database.
 
 ```text
 Browser
@@ -11,7 +11,7 @@ Browser
 Cloudflare DNS + Worker edge (SST)
   |
   v
-Fly.io
+Fly.io (stateless)
   |
   v
 Go process
@@ -21,7 +21,7 @@ Go process
   `-- continuous ATProto Jetstream collector
        |
        +--> bounded recent-signal window
-       `--> SQLite on Fly volume
+       `--> Turso/libSQL durable state
 ```
 
 The HTTP server exposes:
@@ -53,12 +53,22 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8080`.
 
+Without Turso environment variables, local development uses `trendinary.db` through `modernc.org/sqlite`. Tests likewise use isolated local SQLite databases. This preserves fast/offline development without making local filesystem state part of the production topology.
+
 Set `TRENDINARY_JETSTREAM_DISABLED=1` when local development should not connect to the live AT Protocol stream.
 
 Enable local admin access with:
 
 ```bash
 TRENDINARY_ADMIN_PASSWORD='a-long-private-password' npm run dev:api
+```
+
+To use Turso locally instead:
+
+```bash
+export TURSO_DATABASE_URL='libsql://...turso.io'
+export TURSO_AUTH_TOKEN='...'
+npm run dev:api
 ```
 
 ## Production build
@@ -138,7 +148,7 @@ NewsData (optional quota) -----------+
                                 stable trend identity
                                            |
                                            v
-                              historical SQLite baseline
+                               historical Turso baseline
                                            |
                                            v
                            Trendinary Score + lifecycle
@@ -162,9 +172,9 @@ Jetstream v2 is filtered to `app.bsky.feed.post` commit events. Creates, updates
 
 For every event batch:
 
-1. persist signal creates/updates/deletes;
+1. persist signal creates/updates/deletes to Turso;
 2. update the bounded in-memory working window;
-3. persist `Batch.LastCursor()`.
+3. persist `Batch.LastCursor()` to Turso.
 
 Only advancing the cursor after state succeeds makes replay idempotent and avoids gaps after process crashes. A saved cursor reconnects through Jetstream archive replay and then cuts over to the live tail.
 
@@ -172,7 +182,7 @@ See `docs/jetstream.md` for operational details.
 
 ## Persistence
 
-SQLite is the operational source of truth on the Fly volume at `/data/trendinary.db` in production. It stores public trend state and private editorial state in separate domain tables while sharing one connection/writer policy.
+Turso/libSQL is the production operational source of truth. Fly has no database volume and can be replaced/restarted without moving durable application state. The Go process uses the remote libSQL `database/sql` driver, and the private editorial store shares the same durable SQL handle while remaining a separate domain/schema.
 
 Public/history storage includes:
 
@@ -195,20 +205,16 @@ Private editorial storage includes:
 - ingestion runs;
 - newsletter issues and issue items.
 
-SQLite runs in WAL mode with a single application writer. The in-memory recent-signal store is deliberately bounded and disposable; it exists only to make current-window clustering cheap.
+The in-memory recent-signal store remains bounded and disposable; it exists only to make current-window clustering cheap.
 
-## Backups and provenance
+Production sets `TRENDINARY_REQUIRE_TURSO=1`. If `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is missing, the origin refuses to start rather than silently falling back to ephemeral local SQLite.
 
-`trendinary backup <destination.db>` uses SQLite `VACUUM INTO` to produce a transactionally consistent standalone snapshot rather than copying a live WAL database.
+## Recovery and provenance
 
-`.github/workflows/backup.yml` runs manually or daily:
+Database recovery is a Turso concern, not a Fly-container concern. Use Turso point-in-time recovery and Turso database export/dump tooling for production database recovery or offline snapshots.
 
-1. execute the backup command inside the Fly machine against the mounted `/data` volume;
-2. transfer the snapshot with Fly SFTP;
-3. verify it is non-empty and print its SHA-256;
-4. upload it to the configured Cloudflare R2 bucket via the R2 S3-compatible endpoint;
-5. remove the temporary snapshot from Fly.
+`trendinary backup <destination.db>` remains available only when running against local SQLite; it is intentionally rejected for a Turso-backed process.
 
-The workflow expects `FLY_API_TOKEN`, R2 access-key secrets, `CLOUDFLARE_DEFAULT_ACCOUNT_ID`, and repository variable `TRENDINARY_R2_BUCKET`.
+R2 remains the long-lived target for raw source payloads, provenance/replay fixtures, and generated exports. It is not required to keep the production relational database durable.
 
-R2 remains the long-lived target for raw source payloads, provenance/replay fixtures, exports, and SQLite backups.
+See `docs/turso.md` for production setup and recovery guidance.
