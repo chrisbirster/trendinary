@@ -189,28 +189,42 @@ func ageBefore(anchor *html.Node) string {
 		return ""
 	}
 
-	// If markup wraps the link, inspect only nodes that precede the anchor within
-	// that same parent. Never search the parent's previous story siblings.
+	// Inspect only nodes preceding the anchor inside its immediate parent.
+	if age := ageAmongChildrenBefore(parent, anchor); age != "" {
+		return age
+	}
+
+	// Support one inline wrapper such as <span class="headline"><a/></span>.
+	// Block/container parents are themselves the logical story row and must not
+	// inspect previous siblings, which would cross into a neighboring story.
+	if isInlineWrapper(parent) && parent.Parent != nil {
+		if age := ageAmongChildrenBefore(parent.Parent, parent); age != "" {
+			return age
+		}
+	}
+	return ""
+}
+
+func ageAmongChildrenBefore(parent, stop *html.Node) string {
 	age := ""
-	for child := parent.FirstChild; child != nil && child != anchor; child = child.NextSibling {
+	for child := parent.FirstChild; child != nil && child != stop; child = child.NextSibling {
 		if match := relativeAgePattern.FindStringSubmatch(cleanText(textContent(child))); len(match) > 2 {
 			age = strings.ToLower(match[2])
 		}
 	}
-	if age != "" {
-		return age
-	}
+	return age
+}
 
-	// One shallow wrapper is tolerated (for example <span><a/></span>) as long
-	// as the age is a sibling of that wrapper within the same logical row.
-	if parent.Parent != nil {
-		for prev, scanned := parent.PrevSibling, 0; prev != nil && scanned < 3; prev, scanned = prev.PrevSibling, scanned+1 {
-			if match := relativeAgePattern.FindStringSubmatch(cleanText(textContent(prev))); len(match) > 2 {
-				return strings.ToLower(match[2])
-			}
-		}
+func isInlineWrapper(node *html.Node) bool {
+	if node == nil || node.Type != html.ElementNode {
+		return false
 	}
-	return ""
+	switch node.Data {
+	case "span", "strong", "em", "b", "i", "small":
+		return true
+	default:
+		return false
+	}
 }
 
 func outboundURL(raw string) (string, bool) {
