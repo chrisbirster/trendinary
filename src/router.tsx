@@ -1,5 +1,6 @@
 import { createRouter } from "@solidjs/router";
-import { FomoPage, FollowingPage, HomePage, NotFoundPage, PeepPage, TrendPage } from "./pages";
+import { FomoPage, FollowingPage, HomePage, NotFoundPage, PeepPage } from "./pages";
+import { TrendPage } from "./trend-page";
 
 export const Router = createRouter({
   routes: [
