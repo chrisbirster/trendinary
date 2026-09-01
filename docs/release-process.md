@@ -9,6 +9,7 @@ Trendinary uses a strict feature → dev → main flow so production code always
 - Production/release branch.
 - Must remain deployable.
 - Receives normal changes only through release PRs from `dev`.
+- Every merge to `main` must represent a new release version.
 - Every production deployment must correspond to a Git tag and GitHub Release.
 
 ### `dev`
@@ -27,7 +28,7 @@ Examples:
 
 ```text
 feature/news-ingestion ─┐
-feature/entity-v2 ──────┼──> dev ──release PR──> main ──tag──> production
+feature/entity-v2 ──────┼──> dev ──release PR──> main ──tag/release──> production
 feature/fomo ───────────┘
 ```
 
@@ -58,16 +59,20 @@ Git tags and GitHub Releases use a `v` prefix, for example `v0.1.0`.
 5. Merge that release-prep feature back into `dev` after CI passes.
 6. Open a PR from `dev` to `main` titled `Release vX.Y.Z`.
 7. Merge only after the release PR is green.
-8. Run the **Release** GitHub Actions workflow from `main` with version `X.Y.Z`.
+
+Merging the release PR to `main` automatically runs the **Release** workflow.
 
 The Release workflow:
 
-- validates SemVer and repository version metadata;
+- derives the release version from `VERSION`;
+- validates SemVer and that `VERSION` matches `package.json`;
 - verifies a matching changelog section exists;
 - reruns the complete application and Docker verification gate;
-- creates annotated tag `vX.Y.Z`;
+- creates or verifies annotated tag `vX.Y.Z` at the exact `main` commit;
 - creates the GitHub Release from the changelog section;
-- invokes the production deployment using that exact tag.
+- invokes production deployment using that exact release tag.
+
+The workflow is idempotent and can be manually re-run from `main` as a recovery path when a tag or release already exists at the same commit.
 
 After the release, fast-forward/sync `dev` to the new `main` merge commit before accepting the next feature train if needed.
 
@@ -75,20 +80,23 @@ After the release, fast-forward/sync `dev` to the new `main` merge commit before
 
 Never deploy an arbitrary branch or untagged commit to production.
 
-The production workflow accepts a release tag and checks out that exact tag before deploying Fly.io and Cloudflare infrastructure. This makes production reproducible and lets us answer:
+The production workflow accepts a release tag, verifies that a published GitHub Release exists for it, and checks out that exact tag before deploying Fly.io and Cloudflare infrastructure. This makes production reproducible and lets us answer:
 
 > What code is live?
 
 with one exact release such as `v0.3.0`.
+
+A manual production redeploy is allowed only by supplying an existing published release tag.
 
 ## Hotfixes
 
 For a production-critical fix:
 
 1. Branch `hotfix/*` from `main`.
-2. Open the hotfix PR to `main` and require CI.
-3. Release a new PATCH version.
-4. Immediately sync the released `main` commit back into `dev` before normal feature work continues.
+2. Bump to a new PATCH version and update `CHANGELOG.md` on the hotfix branch.
+3. Open the hotfix PR to `main` and require CI.
+4. Merging the hotfix automatically tags/releases/deploys that PATCH version.
+5. Immediately sync the released `main` commit back into `dev` before normal feature work continues.
 
 Hotfixes are the exception to feature → dev → main; they must never leave `dev` missing a production fix.
 
