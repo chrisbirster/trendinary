@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/chrisbirster/trendinary/internal/editorial"
 	"github.com/chrisbirster/trendinary/internal/history"
@@ -25,7 +27,7 @@ func TestParseTechURLsFixture(t *testing.T) {
 
 func TestParseTechURLsMalformedDoesNotAbort(t *testing.T) {
 	html := `<html><body><h2>Wired</h2><div><span>1h</span><a href="javascript:alert(1)">bad</a></div><div><span>2h</span><a href="https://example.com/good">Good item</a></div></body></html>`
-	result, err := editorial.ParseTechURLs(stringsReader(html))
+	result, err := editorial.ParseTechURLs(strings.NewReader(html))
 	if err != nil { t.Fatal(err) }
 	if len(result.Items) != 1 || result.Items[0].Title != "Good item" { t.Fatalf("result = %+v", result) }
 	if result.Malformed != 1 { t.Fatalf("malformed = %d", result.Malformed) }
@@ -51,7 +53,7 @@ func TestDuplicateIngestionStateAndNotes(t *testing.T) {
 	second, err := service.Ingest(context.Background(),"fixture"); if err != nil { t.Fatal(err) }
 	if first.Metrics.ItemsInserted != 1 { t.Fatalf("first metrics = %+v", first.Metrics) }
 	if second.Metrics.Duplicates != 1 || second.Metrics.ItemsInserted != 0 { t.Fatalf("second metrics = %+v", second.Metrics) }
-	items, err := store.ListContent(context.Background(),editorial.StateInbox,"",false,"score",timeZero(),10); if err != nil { t.Fatal(err) }
+	items, err := store.ListContent(context.Background(),editorial.StateInbox,"",false,"score",time.Time{},10); if err != nil { t.Fatal(err) }
 	if len(items)!=1 { t.Fatalf("items = %d",len(items)) }
 	id:=items[0].ID
 	if err:=store.SetState(context.Background(),id,editorial.StateQueued);err!=nil{t.Fatal(err)}
@@ -64,6 +66,3 @@ func TestDuplicateIngestionStateAndNotes(t *testing.T) {
 	runs,err:=store.Runs(context.Background(),"fixture",10);if err!=nil{t.Fatal(err)}
 	if len(runs)!=2||runs[0].Status!="success"{t.Fatalf("runs = %+v",runs)}
 }
-
-func stringsReader(value string) *strings.Reader { return strings.NewReader(value) }
-func timeZero() time.Time { return time.Time{} }
