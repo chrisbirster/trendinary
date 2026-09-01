@@ -4,6 +4,12 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-01
+
+### Fixed
+
+- Production deploy preflight now recognizes staged Fly secrets correctly before the first Machine exists.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added
