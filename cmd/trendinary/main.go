@@ -18,9 +18,11 @@ import (
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/httpapi"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
+	"github.com/chrisbirster/trendinary/internal/ingest/gdelt"
 	githubdiscovery "github.com/chrisbirster/trendinary/internal/ingest/github"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
 	jetstreaming "github.com/chrisbirster/trendinary/internal/ingest/jetstream"
+	"github.com/chrisbirster/trendinary/internal/ingest/newsdata"
 	"github.com/chrisbirster/trendinary/internal/ingest/rss"
 	"github.com/chrisbirster/trendinary/internal/ingest/wikipedia"
 	"github.com/chrisbirster/trendinary/internal/ingest/youtube"
@@ -80,11 +82,11 @@ func main() {
 			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
 			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
-			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 6),
+			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 8),
 		},
 	)
 
-	discoverySources := buildDiscoverySources()
+	discoverySources := buildDiscoverySources(historical)
 	jetstreamEnabled := os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1"
 	scannerEnabled := os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1"
 	runtimeStatus := runtimeinfo.New(jetstreamEnabled, scannerEnabled)
@@ -142,8 +144,8 @@ func main() {
 	}
 }
 
-func buildDiscoverySources() []scanner.DiscoverySource {
-	out := make([]scanner.DiscoverySource, 0, 4)
+func buildDiscoverySources(historical *history.Store) []scanner.DiscoverySource {
+	out := make([]scanner.DiscoverySource, 0, 6)
 	if os.Getenv("TRENDINARY_GITHUB_DISABLED") != "1" {
 		out = append(out, githubdiscovery.New(nil, os.Getenv("TRENDINARY_GITHUB_TOKEN"), envInt("TRENDINARY_GITHUB_LIMIT", 40)))
 	}
@@ -158,6 +160,23 @@ func buildDiscoverySources() []scanner.DiscoverySource {
 	if os.Getenv("TRENDINARY_YOUTUBE_DISABLED") != "1" {
 		if key := strings.TrimSpace(os.Getenv("TRENDINARY_YOUTUBE_API_KEY")); key != "" {
 			out = append(out, youtube.New(nil, key, envString("TRENDINARY_YOUTUBE_REGION", "US"), envInt("TRENDINARY_YOUTUBE_LIMIT", 25)))
+		}
+	}
+	if os.Getenv("TRENDINARY_GDELT_DISABLED") != "1" {
+		out = append(out, gdelt.New(nil, os.Getenv("TRENDINARY_GDELT_QUERY"), envInt("TRENDINARY_GDELT_LIMIT", 250)))
+	}
+	if os.Getenv("TRENDINARY_NEWSDATA_DISABLED") != "1" {
+		if key := strings.TrimSpace(os.Getenv("TRENDINARY_NEWSDATA_API_KEY")); key != "" {
+			out = append(out, newsdata.New(
+				nil,
+				historical,
+				historical,
+				key,
+				envInt("TRENDINARY_NEWSDATA_DAILY_CALLS", 200),
+				os.Getenv("TRENDINARY_NEWSDATA_CATEGORY"),
+			))
+		} else {
+			slog.Info("NewsData discovery disabled because TRENDINARY_NEWSDATA_API_KEY is not configured")
 		}
 	}
 	return out
