@@ -1,0 +1,71 @@
+name: Backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * *"
+
+concurrency:
+  group: trendinary-backup
+  cancel-in-progress: false
+
+jobs:
+  sqlite-to-r2:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.TRENDINARY_R2_BUCKET }}
+      R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_DEFAULT_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - name: Validate backup configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FLY_API_TOKEN" || { echo "FLY_API_TOKEN is required"; exit 1; }
+          test -n "$AWS_ACCESS_KEY_ID" || { echo "CLOUDFLARE_R2_ACCESS_KEY_ID is required"; exit 1; }
+          test -n "$AWS_SECRET_ACCESS_KEY" || { echo "CLOUDFLARE_R2_SECRET_ACCESS_KEY is required"; exit 1; }
+          test -n "$R2_BUCKET" || { echo "Repository variable TRENDINARY_R2_BUCKET is required"; exit 1; }
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create consistent SQLite snapshot on Fly volume
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          remote="/data/trendinary-backup-${stamp}.db"
+          local="trendinary-backup-${stamp}.db"
+          key="sqlite/$(date -u +%Y/%m/%d)/${local}"
+          flyctl ssh console -a trendinary -C "/usr/local/bin/trendinary backup ${remote}"
+          flyctl ssh sftp get "$remote" "$local" -a trendinary
+          echo "remote=$remote" >> "$GITHUB_OUTPUT"
+          echo "local=$local" >> "$GITHUB_OUTPUT"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Verify snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${{ steps.snapshot.outputs.local }}"
+          sha256sum "${{ steps.snapshot.outputs.local }}"
+
+      - name: Upload snapshot to R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "${{ steps.snapshot.outputs.local }}" \
+            "s3://${R2_BUCKET}/${{ steps.snapshot.outputs.key }}" \
+            --endpoint-url "$R2_ENDPOINT"
+
+      - name: Remove temporary Fly snapshot
+        if: always() && steps.snapshot.outputs.remote != ''
+        shell: bash
+        run: |
+          flyctl ssh console -a trendinary -C "rm -f '${{ steps.snapshot.outputs.remote }}'" || true

@@ -1,4 +1,15 @@
 import { createRouter } from "@solidjs/router";
+import {
+  AdminIndexPage,
+  AdminInboxPage,
+  AdminIssuePage,
+  AdminIssuesPage,
+  AdminNewIssuePage,
+  AdminNotesPage,
+  AdminQueuePage,
+  AdminSourcesPage,
+  AdminTrashPage,
+} from "./admin";
 import { FomoPage, FollowingPage, HomePage, NotFoundPage, PeepPage } from "./pages";
 import { TrendPage } from "./trend-page";
 
@@ -9,6 +20,15 @@ export const Router = createRouter({
     { path: "/fomo", component: FomoPage },
     { path: "/following", component: FollowingPage },
     { path: "/trend/:slug", component: TrendPage },
+    { path: "/admin", component: AdminIndexPage },
+    { path: "/admin/inbox", component: AdminInboxPage },
+    { path: "/admin/queue", component: AdminQueuePage },
+    { path: "/admin/notes", component: AdminNotesPage },
+    { path: "/admin/issues", component: AdminIssuesPage },
+    { path: "/admin/issues/new", component: AdminNewIssuePage },
+    { path: "/admin/issues/:id", component: AdminIssuePage },
+    { path: "/admin/sources", component: AdminSourcesPage },
+    { path: "/admin/trash", component: AdminTrashPage },
     { path: "*404", component: NotFoundPage },
   ],
 });
