@@ -20,7 +20,8 @@ export default $config({
     const edgeMetadata = new sst.cloudflare.Kv("TrendinaryEdgeMetadata");
 
     // R2 is the long-lived raw/provenance archive: fetched source payloads,
-    // replay fixtures, generated exports, and eventually SQLite backups.
+    // replay fixtures, and generated exports. Turso owns relational database
+    // durability and recovery independently of the Fly origin.
     const rawArchive = new sst.cloudflare.Bucket("TrendinaryRawArchive");
 
     const edge = new sst.cloudflare.Worker("TrendinaryEdge", {
