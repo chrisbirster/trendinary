@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"net/url"
 	"sort"
 	"strings"
 	"unicode"
@@ -16,13 +17,28 @@ type Cluster struct {
 var stopWords = map[string]struct{}{
 	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "by": {},
 	"for": {}, "from": {}, "in": {}, "is": {}, "it": {}, "of": {}, "on": {}, "or": {},
-	"that": {}, "the": {}, "this": {}, "to": {}, "with": {},
+	"that": {}, "the": {}, "this": {}, "to": {}, "with": {}, "new": {}, "latest": {},
 }
 
-// ClusterSignals is a transparent lexical baseline for v0.1. It intentionally
-// avoids an opaque embedding dependency while the data pipeline is young. Two
-// signals join when their meaningful-token Jaccard similarity crosses the
-// threshold. We can later add entity aliases and embeddings behind this API.
+// phraseAliases only contains spelling/name variants that refer to the same
+// entity. Related-but-distinct entities (for example OpenAI and ChatGPT) must
+// not be collapsed here merely because they often appear together.
+var phraseAliases = []struct {
+	canonical string
+	variants  []string
+}{
+	{canonical: "atproto", variants: []string{"at protocol", "at-protocol", "at proto", "atproto"}},
+	{canonical: "solidjs", variants: []string{"solid.js", "solid-js", "solid js", "solidjs"}},
+	{canonical: "javascript", variants: []string{"java script", "javascript"}},
+	{canonical: "typescript", variants: []string{"type script", "typescript"}},
+	{canonical: "hackernews", variants: []string{"hacker news", "hackernews"}},
+	{canonical: "github", variants: []string{"git hub", "github"}},
+}
+
+// ClusterSignals is a transparent lexical baseline. Entity spelling aliases,
+// hashtags, and linked domains are canonicalized before Jaccard comparison.
+// The implementation remains intentionally inspectable while Trendinary builds
+// enough labeled history to justify a semantic candidate-generation layer.
 func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.45
@@ -48,7 +64,7 @@ func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 
 	tokens := make([]map[string]struct{}, len(input))
 	for i, signal := range input {
-		tokens[i] = tokenSet(signal.Title + " " + signal.Text)
+		tokens[i] = SignalTerms(signal)
 	}
 	for i := 0; i < len(input); i++ {
 		for j := i + 1; j < len(input); j++ {
@@ -77,12 +93,96 @@ func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 	return clusters
 }
 
+// SignalTerms returns canonical, meaningful terms used by clustering and stable
+// trend identity. Keeping this exported means identity resolution and cluster
+// similarity cannot silently drift into two incompatible definitions.
+func SignalTerms(signal model.Signal) map[string]struct{} {
+	text := canonicalize(signal.Title + " " + signal.Text)
+	set := tokenSet(text)
+	if parsed, err := url.Parse(signal.URL); err == nil && parsed.Hostname() != "" {
+		host := strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+		parts := strings.Split(host, ".")
+		if len(parts) > 0 && parts[0] != "" {
+			set[canonicalToken(parts[0])] = struct{}{}
+		}
+	}
+	return set
+}
+
+// CanonicalTerms returns the most representative canonical terms across a set
+// of signals. Stable trend identity uses these terms to reconnect a changing
+// wording cluster to an existing long-lived Trendinary entity.
+func CanonicalTerms(signals []model.Signal, limit int) []string {
+	if limit <= 0 {
+		limit = 8
+	}
+	counts := map[string]int{}
+	for _, signal := range signals {
+		for token := range SignalTerms(signal) {
+			counts[token]++
+		}
+	}
+	type pair struct {
+		word  string
+		count int
+	}
+	pairs := make([]pair, 0, len(counts))
+	for word, count := range counts {
+		if word == "" {
+			continue
+		}
+		pairs = append(pairs, pair{word: word, count: count})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].count == pairs[j].count {
+			return pairs[i].word < pairs[j].word
+		}
+		return pairs[i].count > pairs[j].count
+	})
+	if len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	out := make([]string, 0, len(pairs))
+	for _, item := range pairs {
+		out = append(out, item.word)
+	}
+	return out
+}
+
+func canonicalize(text string) string {
+	text = strings.ToLower(text)
+	// Longest phrases first prevents a shorter variant from partially consuming
+	// a longer one. Word-like padding keeps replacements from joining neighbors.
+	for _, group := range phraseAliases {
+		variants := append([]string(nil), group.variants...)
+		sort.SliceStable(variants, func(i, j int) bool { return len(variants[i]) > len(variants[j]) })
+		for _, variant := range variants {
+			text = strings.ReplaceAll(text, variant, " "+group.canonical+" ")
+		}
+	}
+	return text
+}
+
+func canonicalToken(token string) string {
+	token = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(token, "#")))
+	for _, group := range phraseAliases {
+		for _, variant := range group.variants {
+			compact := strings.NewReplacer(" ", "", "-", "", ".", "").Replace(variant)
+			if strings.NewReplacer(" ", "", "-", "", ".", "").Replace(token) == compact {
+				return group.canonical
+			}
+		}
+	}
+	return token
+}
+
 func tokenSet(text string) map[string]struct{} {
-	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	words := strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '#'
 	})
 	set := make(map[string]struct{}, len(words))
 	for _, word := range words {
+		word = canonicalToken(word)
 		if len(word) < 2 {
 			continue
 		}
@@ -113,36 +213,9 @@ func similarity(a, b map[string]struct{}) float64 {
 }
 
 func clusterKey(signals []model.Signal) string {
-	counts := map[string]int{}
-	for _, signal := range signals {
-		for token := range tokenSet(signal.Title + " " + signal.Text) {
-			counts[token]++
-		}
-	}
-	type pair struct {
-		word  string
-		count int
-	}
-	pairs := make([]pair, 0, len(counts))
-	for word, count := range counts {
-		pairs = append(pairs, pair{word, count})
-	}
-	sort.Slice(pairs, func(i, j int) bool {
-		if pairs[i].count == pairs[j].count {
-			return pairs[i].word < pairs[j].word
-		}
-		return pairs[i].count > pairs[j].count
-	})
-	if len(pairs) == 0 {
+	terms := CanonicalTerms(signals, 3)
+	if len(terms) == 0 {
 		return "unknown"
 	}
-	limit := 3
-	if len(pairs) < limit {
-		limit = len(pairs)
-	}
-	parts := make([]string, 0, limit)
-	for _, item := range pairs[:limit] {
-		parts = append(parts, item.word)
-	}
-	return strings.Join(parts, "-")
+	return strings.Join(terms, "-")
 }

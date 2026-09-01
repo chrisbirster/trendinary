@@ -4,28 +4,40 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/model"
 	"github.com/chrisbirster/trendinary/internal/recent"
 	"github.com/chrisbirster/trendinary/internal/signals"
 )
 
-// The v0.1 lexical clusterer performs pairwise similarity comparisons. Keep
-// the ingestion window large for durability/replay context, but bound each
-// scoring pass until the clustering implementation moves to an indexed or
-// semantic candidate-generation strategy.
 const (
 	maxStreamingDiscoverySignals = 1500
 	maxCandidateClusters          = 100
 	minStreamOnlyAuthors          = 2
 )
 
-// RunWithRecent treats the bounded streaming window as a first-class discovery
-// source alongside Hacker News. Either source may be temporarily unavailable;
-// a scan only fails when no discovery signals remain at all.
+type DiscoverySource interface {
+	Name() string
+	Discover(context.Context) ([]model.Signal, error)
+}
+
+type blueskyHydrator interface {
+	HydratePosts(context.Context, []string) (map[string]bluesky.Post, error)
+}
+
+type blueskyProfiler interface {
+	Profiles(context.Context, []string) map[string]bluesky.Author
+}
+
 func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result, error) {
+	return s.RunWithSources(ctx, live, nil)
+}
+
+func (s *Scanner) RunWithSources(ctx context.Context, live *recent.Store, extra []DiscoverySource) (Result, error) {
 	if s.history == nil || s.memory == nil {
 		return Result{}, fmt.Errorf("scanner dependencies are incomplete")
 	}
@@ -48,6 +60,17 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 			streamSignals = streamSignals[len(streamSignals)-maxStreamingDiscoverySignals:]
 		}
 		discovery = append(discovery, streamSignals...)
+	}
+	for _, source := range extra {
+		if source == nil {
+			continue
+		}
+		values, err := source.Discover(ctx)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s discovery: %v", source.Name(), err))
+			continue
+		}
+		discovery = append(discovery, values...)
 	}
 	discovery = deduplicateSignals(discovery)
 	if len(discovery) == 0 {
@@ -74,21 +97,22 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 	if len(seedClusters) > maxCandidateClusters {
 		seedClusters = seedClusters[:maxCandidateClusters]
 	}
-
-	// Raw discovery can be healthy while no topic has enough independent
-	// evidence to qualify as a trend candidate. Keep the last good published
-	// trends in that case rather than replacing them with random singleton posts.
 	if len(seedClusters) == 0 {
-		return Result{
-			Signals:  len(discovery),
-			Clusters: 0,
-			Trends:   0,
-			Warnings: append(warnings, "no clusters met the trend candidate gate"),
-		}, nil
+		return Result{Signals: len(discovery), Clusters: 0, Trends: 0, Warnings: append(warnings, "no clusters met the trend candidate gate")}, nil
 	}
 
 	enriched := make([]engine.Cluster, len(seedClusters))
 	copy(enriched, seedClusters)
+	hydrationLimit := s.config.EnrichClusters
+	if hydrationLimit > len(enriched) {
+		hydrationLimit = len(enriched)
+	}
+	for index := 0; index < hydrationLimit; index++ {
+		if err := s.hydrateBlueskyCandidate(ctx, &enriched[index]); err != nil {
+			warnings = append(warnings, fmt.Sprintf("bluesky hydrate %q: %v", enriched[index].Key, err))
+		}
+	}
+
 	if s.bluesky != nil {
 		limit := s.config.EnrichClusters
 		if limit > len(enriched) {
@@ -105,6 +129,7 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 				continue
 			}
 			enriched[index].Signals = deduplicateSignals(append(enriched[index].Signals, signals.Bluesky(response.Posts)...))
+			s.enrichBlueskyProfiles(ctx, &enriched[index])
 		}
 	}
 
@@ -120,14 +145,29 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 
 	now := s.now().UTC()
 	trends := make([]model.Trend, 0, len(enriched))
-	for _, cluster := range enriched {
-		trend, snapshot, scoreErr := s.scoreCluster(ctx, cluster, now)
-		if scoreErr != nil {
-			warnings = append(warnings, fmt.Sprintf("score %s: %v", cluster.Key, scoreErr))
+	for _, currentCluster := range enriched {
+		entity, identityErr := s.history.ResolveEntity(ctx, clusterName(currentCluster), currentCluster.Key, engine.CanonicalTerms(currentCluster.Signals, 8), now)
+		if identityErr != nil {
+			warnings = append(warnings, fmt.Sprintf("identity %s: %v", currentCluster.Key, identityErr))
 			continue
 		}
+
+		stableCluster := currentCluster
+		stableCluster.Key = entity.ID
+		trend, snapshot, scoreErr := s.scoreCluster(ctx, stableCluster, now)
+		if scoreErr != nil {
+			warnings = append(warnings, fmt.Sprintf("score %s: %v", entity.ID, scoreErr))
+			continue
+		}
+		trend.ID = entity.ID
+		trend.Slug = entity.Slug
+		trend.Aliases = entity.Aliases
+		trend.Name = clusterName(currentCluster)
+		if err := s.decorateTrend(ctx, &trend, entity, currentCluster, now); err != nil {
+			warnings = append(warnings, fmt.Sprintf("decorate %s: %v", entity.ID, err))
+		}
 		if err := s.history.RecordSnapshot(ctx, snapshot); err != nil {
-			warnings = append(warnings, fmt.Sprintf("snapshot %s: %v", cluster.Key, err))
+			warnings = append(warnings, fmt.Sprintf("snapshot %s: %v", entity.ID, err))
 			continue
 		}
 		trends = append(trends, trend)
@@ -147,12 +187,69 @@ func (s *Scanner) RunWithRecent(ctx context.Context, live *recent.Store) (Result
 	}
 	s.memory.ReplaceTrends(trends)
 
-	return Result{
-		Signals:  len(allSignals),
-		Clusters: len(enriched),
-		Trends:   len(trends),
-		Warnings: warnings,
-	}, nil
+	return Result{Signals: len(allSignals), Clusters: len(enriched), Trends: len(trends), Warnings: warnings}, nil
+}
+
+func (s *Scanner) hydrateBlueskyCandidate(ctx context.Context, cluster *engine.Cluster) error {
+	if s.bluesky == nil || cluster == nil {
+		return nil
+	}
+	hydrator, ok := s.bluesky.(blueskyHydrator)
+	if !ok {
+		return nil
+	}
+	uris := make([]string, 0)
+	for _, signal := range cluster.Signals {
+		if signal.Source.Domain != "bsky.app" || !strings.HasPrefix(signal.ID, "bsky:at://") {
+			continue
+		}
+		uris = append(uris, strings.TrimPrefix(signal.ID, "bsky:"))
+	}
+	if len(uris) == 0 {
+		return nil
+	}
+	posts, err := hydrator.HydratePosts(ctx, uris)
+	if err != nil {
+		return err
+	}
+	if len(posts) == 0 {
+		return nil
+	}
+	values := make([]bluesky.Post, 0, len(posts))
+	for _, post := range posts {
+		values = append(values, post)
+	}
+	cluster.Signals = deduplicateSignals(append(cluster.Signals, signals.Bluesky(values)...))
+	return nil
+}
+
+func (s *Scanner) enrichBlueskyProfiles(ctx context.Context, cluster *engine.Cluster) {
+	if s.bluesky == nil || cluster == nil {
+		return
+	}
+	profiler, ok := s.bluesky.(blueskyProfiler)
+	if !ok {
+		return
+	}
+	actors := make([]string, 0)
+	for _, signal := range cluster.Signals {
+		if signal.Source.Domain == "bsky.app" && signal.Actor == nil && signal.AuthorID != "" {
+			actors = append(actors, signal.AuthorID)
+		}
+	}
+	profiles := profiler.Profiles(ctx, actors)
+	for index := range cluster.Signals {
+		signal := &cluster.Signals[index]
+		profile, ok := profiles[signal.AuthorID]
+		if !ok {
+			continue
+		}
+		signal.Author = profile.Handle
+		if signal.Author == "" {
+			signal.Author = profile.DID
+		}
+		signal.Actor = &model.ActorProfile{DID: profile.DID, Handle: profile.Handle, DisplayName: profile.DisplayName, Avatar: profile.Avatar}
+	}
 }
 
 func candidateCluster(cluster engine.Cluster) bool {
@@ -162,20 +259,26 @@ func candidateCluster(cluster engine.Cluster) bool {
 		if signal.Source.Domain != "bsky.app" {
 			hasNonStreamSignal = true
 		}
-		if signal.Source.Domain == "bsky.app" && signal.Author != "" {
-			authors[signal.Author] = struct{}{}
+		identity := signal.AuthorID
+		if identity == "" {
+			identity = signal.Author
+		}
+		if signal.Source.Domain == "bsky.app" && identity != "" {
+			authors[identity] = struct{}{}
 		}
 	}
 	return hasNonStreamSignal || len(authors) >= minStreamOnlyAuthors
 }
 
 func candidateWeight(cluster engine.Cluster) int {
-	// Community agreement is deliberately worth more than raw post count so
-	// many near-duplicate posts from one account cannot dominate candidates.
 	authors := make(map[string]struct{})
 	for _, signal := range cluster.Signals {
-		if signal.Author != "" {
-			authors[signal.Source.Domain+":"+signal.Author] = struct{}{}
+		identity := signal.AuthorID
+		if identity == "" {
+			identity = signal.Author
+		}
+		if identity != "" {
+			authors[signal.Source.Domain+":"+identity] = struct{}{}
 		}
 	}
 	return clusterEngagement(cluster) + len(cluster.Signals)*10 + len(authors)*25

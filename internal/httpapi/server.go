@@ -11,6 +11,8 @@ import (
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
+	"github.com/chrisbirster/trendinary/internal/recent"
+	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 	"github.com/chrisbirster/trendinary/internal/signals"
 	"github.com/chrisbirster/trendinary/internal/store"
 )
@@ -21,6 +23,8 @@ type Server struct {
 	hn       *hackernews.Client
 	bluesky  *bluesky.Client
 	history  *history.Store
+	runtime  *runtimeinfo.Status
+	recent   *recent.Store
 }
 
 type Option func(*Server)
@@ -28,6 +32,13 @@ type Option func(*Server)
 func WithHistory(historical *history.Store) Option {
 	return func(server *Server) {
 		server.history = historical
+	}
+}
+
+func WithRuntime(status *runtimeinfo.Status, recentSignals *recent.Store) Option {
+	return func(server *Server) {
+		server.runtime = status
+		server.recent = recentSignals
 	}
 }
 
@@ -45,8 +56,12 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
+	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/propagation", server.trendPropagation)
+	mux.HandleFunc("GET /api/v1/trends/{slug}/explanation", server.trendExplanation)
+	mux.HandleFunc("POST /api/v1/trends/{slug}/ask", server.askTrend)
 	mux.HandleFunc("GET /api/v1/trends/{slug}", server.trend)
 	mux.HandleFunc("GET /api/v1/signals/hacker-news", server.hackerNewsSignals)
 	mux.HandleFunc("GET /api/v1/signals/bluesky", server.blueskySignals)
@@ -64,6 +79,32 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		"version": "v1",
 		"time":    time.Now().UTC().Format(time.RFC3339),
 		"history": s.history != nil,
+	})
+}
+
+func (s *Server) streamHealth(w http.ResponseWriter, r *http.Request) {
+	var snapshot runtimeinfo.Snapshot
+	if s.runtime != nil {
+		snapshot = s.runtime.Snapshot()
+	}
+	windowSize := 0
+	if s.recent != nil {
+		windowSize = s.recent.Len()
+	}
+	if s.history != nil && snapshot.Stream.LastCursor == 0 {
+		if cursor, ok, err := s.history.Cursor(r.Context(), "atproto-jetstream-v2-posts"); err == nil && ok {
+			snapshot.Stream.LastCursor = cursor
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"jetstream": snapshot.Stream,
+			"scanner":   snapshot.Scanner,
+			"window": map[string]any{
+				"signals": windowSize,
+			},
+		},
 	})
 }
 
@@ -89,20 +130,23 @@ func (s *Server) trendHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	snapshots, err := s.history.RecentSnapshots(r.Context(), r.PathValue("slug"), limit)
+	trendKey, err := s.history.ResolveTrendKey(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend identity unavailable"})
+		return
+	}
+	snapshots, err := s.history.RecentSnapshots(r.Context(), trendKey, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "trend history unavailable"})
 		return
 	}
-	// SQLite returns newest-first for efficient LIMIT queries; the API returns
-	// chronological order so clients can render charts without re-sorting.
 	for left, right := 0, len(snapshots)-1; left < right; left, right = left+1, right-1 {
 		snapshots[left], snapshots[right] = snapshots[right], snapshots[left]
 	}
 	w.Header().Set("Cache-Control", "public, max-age=15, stale-while-revalidate=30")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": snapshots,
-		"meta": map[string]any{"trend_key": r.PathValue("slug"), "score_version": engine.ScoreVersion},
+		"meta": map[string]any{"trend_key": trendKey, "slug": r.PathValue("slug"), "score_version": engine.ScoreVersion},
 	})
 }
 

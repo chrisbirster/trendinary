@@ -25,14 +25,61 @@ export type TrendSource = {
   bias?: BiasAssessment;
 };
 
+export type ActorProfile = {
+  did?: string;
+  handle?: string;
+  display_name?: string;
+  avatar?: string;
+};
+
 export type TimelineEvent = {
   time: string;
   label: string;
   text: string;
 };
 
+export type PropagationHop = {
+  source: TrendSource;
+  first_seen: string;
+  last_seen: string;
+  signal_count: number;
+  engagement: number;
+};
+
+export type PerspectiveMix = {
+  rated_sources: number;
+  total_sources: number;
+  left: number;
+  lean_left: number;
+  center: number;
+  lean_right: number;
+  right: number;
+  mixed: number;
+  unrated: number;
+  note: string;
+};
+
+export type Evidence = {
+  source: TrendSource;
+  title: string;
+  url?: string;
+  author?: string;
+  published_at?: string;
+};
+
+export type Explanation = {
+  summary: string;
+  what_changed: string;
+  lore: string;
+  confidence: string;
+  mode: string;
+  evidence: Evidence[];
+};
+
 export type Trend = {
+  id?: string;
   slug: string;
+  aliases?: string[];
   rank: number;
   name: string;
   category: string;
@@ -44,8 +91,18 @@ export type Trend = {
   vibe: string;
   sources: TrendSource[];
   timeline?: TimelineEvent[];
+  top_voices?: ActorProfile[];
+  propagation?: PropagationHop[];
+  perspective?: PerspectiveMix;
+  explanation?: Explanation;
   lore?: string;
   why?: string;
+};
+
+export type AskAnswer = {
+  answer: string;
+  mode: string;
+  evidence: Evidence[];
 };
 
 export type ScoreBreakdown = {
@@ -101,4 +158,17 @@ export async function fetchTrendHistory(slug: string, limit = 48): Promise<Trend
 
 export async function fetchSource(domain: string): Promise<TrendSource> {
   return (await getJSON<Envelope<TrendSource>>(`/api/v1/sources/${encodeURIComponent(domain)}`)).data;
+}
+
+export async function askTrend(slug: string, question: string): Promise<AskAnswer> {
+  const response = await fetch(`/api/v1/trends/${encodeURIComponent(slug)}/ask`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ question }),
+  });
+  if (!response.ok) throw new Error(`Trendinary API ${response.status}`);
+  return ((await response.json()) as Envelope<AskAnswer>).data;
 }
