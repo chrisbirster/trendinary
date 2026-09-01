@@ -1,11 +1,14 @@
 package editorial
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -23,15 +26,17 @@ type DiscoverySource interface {
 }
 
 type TechURLs struct {
-	client *http.Client
-	url    string
+	client     *http.Client
+	url        string
+	archiveDir string
+	now        func() time.Time
 }
 
 func NewTechURLs(client *http.Client) *TechURLs {
 	if client == nil {
 		client = &http.Client{Timeout: 12 * time.Second}
 	}
-	return &TechURLs{client: client, url: techURLsEndpoint}
+	return &TechURLs{client: client, url: techURLsEndpoint, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func NewTechURLsWithEndpoint(client *http.Client, endpoint string) *TechURLs {
@@ -40,6 +45,7 @@ func NewTechURLsWithEndpoint(client *http.Client, endpoint string) *TechURLs {
 	return source
 }
 
+func (t *TechURLs) SetArchiveDir(dir string) { t.archiveDir = strings.TrimSpace(dir) }
 func (t *TechURLs) Name() string { return "techurls" }
 
 func (t *TechURLs) Fetch(ctx context.Context) (FetchResult, error) {
@@ -51,7 +57,25 @@ func (t *TechURLs) Fetch(ctx context.Context) (FetchResult, error) {
 	if err != nil { return FetchResult{}, err }
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 { return FetchResult{}, fmt.Errorf("techurls returned HTTP %d", resp.StatusCode) }
-	return ParseTechURLs(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil { return FetchResult{}, err }
+	if t.archiveDir != "" {
+		if err := t.archive(raw); err != nil {
+			// Archival must never make discovery unavailable. Surface it in metrics.
+			result, parseErr := ParseTechURLs(bytes.NewReader(raw))
+			if parseErr != nil { return FetchResult{}, parseErr }
+			result.Errors = append(result.Errors, "raw archive: "+err.Error())
+			return result, nil
+		}
+	}
+	return ParseTechURLs(bytes.NewReader(raw))
+}
+
+func (t *TechURLs) archive(raw []byte) error {
+	folder := filepath.Join(t.archiveDir, "techurls", t.now().UTC().Format("2006/01/02"))
+	if err := os.MkdirAll(folder, 0o750); err != nil { return err }
+	path := filepath.Join(folder, t.now().UTC().Format("150405.000000000")+".html")
+	return os.WriteFile(path, raw, 0o640)
 }
 
 func ParseTechURLs(reader io.Reader) (FetchResult, error) {
@@ -117,7 +141,6 @@ func ageBefore(anchor *html.Node) string {
 			if match := relativeAgePattern.FindStringSubmatch(cleanText(textContent(prev))); len(match) > 2 { return strings.ToLower(match[2]) }
 		}
 	}
-	// Some layouts put the age and link in the same small wrapper.
 	for current, depth := anchor.Parent, 0; current != nil && depth < 3; current, depth = current.Parent, depth+1 {
 		if match := relativeAgePattern.FindStringSubmatch(cleanText(textContent(current))); len(match) > 2 { return strings.ToLower(match[2]) }
 	}
