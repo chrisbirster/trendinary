@@ -53,9 +53,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          secrets="$(flyctl secrets list --app trendinary --json)"
+          secret_names="$(flyctl secrets list --app trendinary | awk 'NR > 1 { print $1 }')"
           for required in TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
-            if ! printf '%s' "$secrets" | grep -q "\"Name\":\"${required}\""; then
+            if ! printf '%s\n' "$secret_names" | grep -Fxq "$required"; then
               echo "::error::Missing Fly secret ${required}. Configure Turso before releasing."
               exit 1
             fi
