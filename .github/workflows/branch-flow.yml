@@ -1,0 +1,37 @@
+name: Branch flow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR branch direction
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD" != "dev" ] && [[ "$HEAD" != hotfix/* ]]; then
+              echo "::error::main is release-only. PRs to main must come from dev or hotfix/*."
+              exit 1
+            fi
+          fi
+
+          if [[ "$HEAD" == feature/* ]] && [ "$BASE" != "dev" ]; then
+            echo "::error::feature/* pull requests must target dev."
+            exit 1
+          fi
+
+          if [ "$HEAD" = "dev" ] && [ "$BASE" != "main" ]; then
+            echo "::error::dev may only be used as a PR head for a release into main."
+            exit 1
+          fi
+
+          echo "Branch flow valid: $HEAD -> $BASE"
