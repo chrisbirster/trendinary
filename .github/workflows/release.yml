@@ -1,17 +1,9 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "SemVer release version without the v prefix (for example 0.1.0)"
-        required: true
-        type: string
-      prerelease:
-        description: "Publish as a GitHub pre-release"
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: write
@@ -36,30 +28,32 @@ jobs:
       - run: npm install
       - name: Validate release metadata
         id: release_meta
-        env:
-          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "$VERSION_INPUT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
-            echo "::error::version must be SemVer without a v prefix"
-            exit 1
-          fi
-          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          VERSION_VALUE="$(tr -d '[:space:]' < VERSION)"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [ "$VERSION_INPUT" != "$FILE_VERSION" ] || [ "$VERSION_INPUT" != "$PACKAGE_VERSION" ]; then
-            echo "::error::release input ($VERSION_INPUT), VERSION ($FILE_VERSION), and package.json ($PACKAGE_VERSION) must match"
+          if ! printf '%s' "$VERSION_VALUE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "::error::VERSION must contain SemVer without a v prefix"
             exit 1
           fi
-          if ! grep -Eq "^## \[$VERSION_INPUT\]( |$)" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md has no [$VERSION_INPUT] release section"
+          if [ "$VERSION_VALUE" != "$PACKAGE_VERSION" ]; then
+            echo "::error::VERSION ($VERSION_VALUE) and package.json ($PACKAGE_VERSION) must match"
             exit 1
           fi
-          TAG="v$VERSION_INPUT"
+          if ! grep -Eq "^## \[$VERSION_VALUE\]( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no [$VERSION_VALUE] release section"
+            exit 1
+          fi
+          TAG="v$VERSION_VALUE"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "::error::$TAG already exists"
-            exit 1
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              echo "::error::$TAG already points to $TAG_SHA instead of this main commit $GITHUB_SHA"
+              exit 1
+            fi
           fi
+          echo "version=$VERSION_VALUE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Verify Go module lock files
         run: |
@@ -71,33 +65,41 @@ jobs:
         run: docker build -t trendinary:release .
       - name: Extract changelog release notes
         env:
-          VERSION_INPUT: ${{ inputs.version }}
+          VERSION_VALUE: ${{ steps.release_meta.outputs.version }}
         run: |
-          awk -v version="$VERSION_INPUT" '
+          awk -v version="$VERSION_VALUE" '
             $0 ~ "^## \\[" version "\\]" {found=1; next}
             found && $0 ~ /^## \[/ {exit}
             found {print}
           ' CHANGELOG.md > release-notes.md
           if [ ! -s release-notes.md ]; then
-            echo "::error::No release notes found for $VERSION_INPUT"
+            echo "::error::No release notes found for $VERSION_VALUE"
             exit 1
           fi
-      - name: Create annotated tag
+      - name: Create annotated tag when needed
         env:
           TAG: ${{ steps.release_meta.outputs.tag }}
         run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists at this release commit"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Trendinary $TAG"
           git push origin "$TAG"
-      - name: Create GitHub Release
+      - name: Create GitHub Release when needed
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release_meta.outputs.tag }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          VERSION_VALUE: ${{ steps.release_meta.outputs.version }}
         run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG GitHub Release already exists"
+            exit 0
+          fi
           args=(release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file release-notes.md --verify-tag)
-          if [ "$PRERELEASE" = "true" ]; then
+          if [[ "$VERSION_VALUE" == *-* ]]; then
             args+=(--prerelease)
           fi
           gh "${args[@]}"
