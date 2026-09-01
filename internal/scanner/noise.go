@@ -33,13 +33,18 @@ func filterDiscoveryNoise(values []model.Signal) noiseResult {
 
 func candidateClusterV2(cluster engine.Cluster) bool {
 	if len(cluster.Signals)==0{return false}
-	authors:=map[string]struct{}{};domains:=map[string]struct{}{};strongSingle:=false
+	authors:=map[string]struct{}{};domains:=map[string]struct{}{};strongSingle:=false;onlyNewsData:=true
 	for _,signal:=range cluster.Signals{
+		if !strings.HasPrefix(signal.ID,"newsdata:"){onlyNewsData=false}
 		domain:=signal.Source.Domain;if domain==""{domain=signal.Source.Name};if domain!=""{domains[domain]=struct{}{}}
 		identity:=signal.AuthorID;if identity==""{identity=signal.Author};if identity!=""{authors[domain+":"+identity]=struct{}{}}
 		eng:=signal.Engagement.Score+signal.Engagement.Likes+signal.Engagement.Reposts+signal.Engagement.Replies+signal.Engagement.Quotes
 		if eng>=20{strongSingle=true}
 	}
+	// NewsData's free feed is intentionally treated as delayed corroboration.
+	// It may strengthen a cluster found by a fresher source but cannot create a
+	// public Trendinary trend on its own.
+	if onlyNewsData{return false}
 	if len(cluster.Signals)>=2 && (len(domains)>=2 || len(authors)>=2){return true}
 	if len(cluster.Signals)==1{return strongSingle}
 	// Stream-only bursts need independent voices even if source breadth is one.
