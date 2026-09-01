@@ -4,6 +4,8 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
 ### Added
 
 - Private authenticated editorial workspace under `/admin` with inbox, queue, notes, sources, trash, and newsletter issue assembly.
