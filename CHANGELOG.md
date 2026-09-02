@@ -4,6 +4,12 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-01
+
+### Fixed
+
+- Production Cloudflare deployment no longer creates a legacy Page Rule for `www.trendinary.com`; the apex `trendinary.com` Worker/DNS deployment now avoids the Page Rules permission entirely. A modern `www` redirect can be added separately.
+
 ## [0.2.4] - 2026-09-01
 
 ### Fixed
