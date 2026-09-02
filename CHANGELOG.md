@@ -4,6 +4,12 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-01
+
+### Fixed
+
+- Production Cloudflare deployment now uses Cloudflare provider `6.15.0`, satisfying the minimum provider version required by SST 4.17.1.
+
 ## [0.2.2] - 2026-09-01
 
 ### Fixed
