@@ -8,7 +8,7 @@ export default $config({
       removal: input?.stage === "production" ? "retain" : "remove",
       protect: input?.stage === "production",
       providers: {
-        cloudflare: "5.37.1",
+        cloudflare: "6.15.0",
       },
     };
   },
