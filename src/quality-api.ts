@@ -31,12 +31,23 @@ export type QualityReport = {
   bad_clusters: number;
   wrong_names: number;
   precision_proxy: number;
+  top_10_precision: number;
+  top_10_evaluated: number;
+  top_25_precision: number;
+  top_25_evaluated: number;
+  false_positive_rate: number;
+  duplicate_cluster_rate: number;
   early_hit_rate: number;
   cluster_health: number;
   naming_health: number;
   recommended_min_score: number;
   positive_mean_score: number;
   noise_mean_score: number;
+  average_source_breadth: number;
+  average_source_count: number;
+  average_lead_to_breaking_minutes: number;
+  average_emerging_to_rising_minutes: number;
+  average_rising_to_breaking_minutes: number;
 };
 
 export type ReplayReport = {

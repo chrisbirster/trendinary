@@ -33,6 +33,18 @@ function percent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+function measuredPercent(value: number, sample: number) {
+  return sample > 0 ? percent(value) : "—";
+}
+
+function duration(minutes: number) {
+  if (minutes <= 0) return "—";
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = Math.round(minutes % 60);
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
 function QualityShell(props: { children: unknown }) {
   const links = [
     ["Inbox", "/admin/inbox"],
@@ -162,8 +174,16 @@ export function AdminQualityPage() {
         {(value) => (
           <>
             <div {...sx(styles.meta)}>{value().labels} stable trends labeled · recommended public gate {value().recommended_min_score}</div>
+            <Metric label="Top 10 precision" value={measuredPercent(value().top_10_precision, value().top_10_evaluated)} copy={`${value().top_10_evaluated} scored, precision-eligible labels in the highest-ranked sample.`} />
+            <Metric label="Top 25 precision" value={measuredPercent(value().top_25_precision, value().top_25_evaluated)} copy={`${value().top_25_evaluated} scored, precision-eligible labels in the highest-ranked sample.`} />
             <Metric label="Precision proxy" value={percent(value().precision_proxy)} copy="Usable trend labels divided by usable + noise/duplicate/bad-cluster labels." />
+            <Metric label="False-positive rate" value={percent(value().false_positive_rate)} copy="Noise, duplicate, and bad-cluster outcomes among precision-eligible labels." />
+            <Metric label="Duplicate-cluster rate" value={percent(value().duplicate_cluster_rate)} copy="How often a stable candidate was labeled as a duplicate cluster." />
             <Metric label="Early hit rate" value={percent(value().early_hit_rate)} copy="Good early catches versus trends you marked detected too late." />
+            <Metric label="Average source breadth" value={value().average_source_count > 0 ? value().average_source_count.toFixed(1) : "—"} copy={value().average_source_count > 0 ? `${percent(value().average_source_breadth)} normalized breadth across positively labeled trends.` : "History-backed source breadth appears once labeled trends have persisted snapshots."} />
+            <Metric label="Lead time to Breaking" value={duration(value().average_lead_to_breaking_minutes)} copy="Average time from first Trendinary observation to the first BREAKING snapshot." />
+            <Metric label="Emerging → Rising" value={duration(value().average_emerging_to_rising_minutes)} copy="Average observed lifecycle time for positively labeled trends that reached both states." />
+            <Metric label="Rising → Breaking" value={duration(value().average_rising_to_breaking_minutes)} copy="Average observed lifecycle time for positively labeled trends that reached both states." />
             <Metric label="Cluster health" value={percent(value().cluster_health)} copy="Penalty comes from duplicate and bad-cluster labels." />
             <Metric label="Naming health" value={percent(value().naming_health)} copy="How often stable canonical naming survives human review." />
           </>

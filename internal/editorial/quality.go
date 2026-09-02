@@ -16,13 +16,13 @@ import (
 type QualityLabel string
 
 const (
-	QualityRealTrend      QualityLabel = "real-trend"
-	QualityNoise          QualityLabel = "noise"
-	QualityDuplicate      QualityLabel = "duplicate"
-	QualityTooEarly       QualityLabel = "interesting-too-early"
-	QualityTooLate        QualityLabel = "detected-too-late"
-	QualityBadCluster     QualityLabel = "bad-cluster"
-	QualityWrongName      QualityLabel = "wrong-canonical-name"
+	QualityRealTrend  QualityLabel = "real-trend"
+	QualityNoise      QualityLabel = "noise"
+	QualityDuplicate  QualityLabel = "duplicate"
+	QualityTooEarly   QualityLabel = "interesting-too-early"
+	QualityTooLate    QualityLabel = "detected-too-late"
+	QualityBadCluster QualityLabel = "bad-cluster"
+	QualityWrongName  QualityLabel = "wrong-canonical-name"
 )
 
 var qualitySchemaReady sync.Map
@@ -66,21 +66,48 @@ type QualityFeedback struct {
 }
 
 type QualityReport struct {
-	Labels              int     `json:"labels"`
-	RealTrends          int     `json:"real_trends"`
-	Noise               int     `json:"noise"`
-	Duplicates          int     `json:"duplicates"`
-	InterestingTooEarly int     `json:"interesting_too_early"`
-	DetectedTooLate     int     `json:"detected_too_late"`
-	BadClusters         int     `json:"bad_clusters"`
-	WrongNames          int     `json:"wrong_names"`
-	PrecisionProxy      float64 `json:"precision_proxy"`
-	EarlyHitRate        float64 `json:"early_hit_rate"`
-	ClusterHealth       float64 `json:"cluster_health"`
-	NamingHealth        float64 `json:"naming_health"`
-	RecommendedMinScore int     `json:"recommended_min_score"`
-	PositiveMeanScore   float64 `json:"positive_mean_score"`
-	NoiseMeanScore      float64 `json:"noise_mean_score"`
+	Labels                         int     `json:"labels"`
+	RealTrends                     int     `json:"real_trends"`
+	Noise                          int     `json:"noise"`
+	Duplicates                     int     `json:"duplicates"`
+	InterestingTooEarly            int     `json:"interesting_too_early"`
+	DetectedTooLate                int     `json:"detected_too_late"`
+	BadClusters                    int     `json:"bad_clusters"`
+	WrongNames                     int     `json:"wrong_names"`
+	PrecisionProxy                 float64 `json:"precision_proxy"`
+	Top10Precision                 float64 `json:"top_10_precision"`
+	Top10Evaluated                 int     `json:"top_10_evaluated"`
+	Top25Precision                 float64 `json:"top_25_precision"`
+	Top25Evaluated                 int     `json:"top_25_evaluated"`
+	FalsePositiveRate              float64 `json:"false_positive_rate"`
+	DuplicateClusterRate           float64 `json:"duplicate_cluster_rate"`
+	EarlyHitRate                   float64 `json:"early_hit_rate"`
+	ClusterHealth                  float64 `json:"cluster_health"`
+	NamingHealth                   float64 `json:"naming_health"`
+	RecommendedMinScore            int     `json:"recommended_min_score"`
+	PositiveMeanScore              float64 `json:"positive_mean_score"`
+	NoiseMeanScore                 float64 `json:"noise_mean_score"`
+	AverageSourceBreadth            float64 `json:"average_source_breadth"`
+	AverageSourceCount              float64 `json:"average_source_count"`
+	AverageLeadToBreakingMinutes    float64 `json:"average_lead_to_breaking_minutes"`
+	AverageEmergingToRisingMinutes  float64 `json:"average_emerging_to_rising_minutes"`
+	AverageRisingToBreakingMinutes  float64 `json:"average_rising_to_breaking_minutes"`
+}
+
+type qualityObservation struct {
+	Label QualityLabel
+	Score int
+}
+
+type trendTiming struct {
+	TrendKey          string
+	FirstSeen         time.Time
+	FirstEmerging     time.Time
+	FirstRising       time.Time
+	FirstBreaking     time.Time
+	LatestBreadth     float64
+	LatestSourceCount int
+	HasSnapshot       bool
 }
 
 func (s *Store) ensureQualitySchema(ctx context.Context) error {
@@ -185,21 +212,28 @@ func (s *Store) QualityReport(ctx context.Context) (QualityReport, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT label, score
 FROM quality_feedback f
-WHERE created_at = (
-  SELECT MAX(f2.created_at) FROM quality_feedback f2 WHERE f2.trend_key = f.trend_key
-)`)
+WHERE id = (
+  SELECT f2.id
+  FROM quality_feedback f2
+  WHERE f2.trend_key = f.trend_key
+  ORDER BY f2.created_at DESC, f2.id DESC
+  LIMIT 1
+)
+ORDER BY score DESC, created_at DESC`)
 	if err != nil {
 		return QualityReport{}, err
 	}
 	defer rows.Close()
 	var report QualityReport
 	var positiveScores, noiseScores []int
+	observations := make([]qualityObservation, 0, 64)
 	for rows.Next() {
 		var label QualityLabel
 		var score int
 		if err := rows.Scan(&label, &score); err != nil {
 			return QualityReport{}, err
 		}
+		observations = append(observations, qualityObservation{Label: label, Score: score})
 		report.Labels++
 		switch label {
 		case QualityRealTrend:
@@ -225,22 +259,180 @@ WHERE created_at = (
 	if err := rows.Err(); err != nil {
 		return QualityReport{}, err
 	}
+
 	positive := report.RealTrends + report.InterestingTooEarly + report.DetectedTooLate
 	falsePositive := report.Noise + report.Duplicates + report.BadClusters
 	if denominator := positive + falsePositive; denominator > 0 {
 		report.PrecisionProxy = float64(positive) / float64(denominator)
+		report.FalsePositiveRate = float64(falsePositive) / float64(denominator)
 	}
+	report.Top10Precision, report.Top10Evaluated = rankedPrecision(observations, 10)
+	report.Top25Precision, report.Top25Evaluated = rankedPrecision(observations, 25)
 	if denominator := report.InterestingTooEarly + report.DetectedTooLate; denominator > 0 {
 		report.EarlyHitRate = float64(report.InterestingTooEarly) / float64(denominator)
 	}
 	if report.Labels > 0 {
+		report.DuplicateClusterRate = float64(report.Duplicates) / float64(report.Labels)
 		report.ClusterHealth = 1 - float64(report.Duplicates+report.BadClusters)/float64(report.Labels)
 		report.NamingHealth = 1 - float64(report.WrongNames)/float64(report.Labels)
 	}
 	report.PositiveMeanScore = meanScores(positiveScores)
 	report.NoiseMeanScore = meanScores(noiseScores)
 	report.RecommendedMinScore = recommendedMinScore(report.PositiveMeanScore, report.NoiseMeanScore, len(positiveScores), len(noiseScores))
+
+	if err := s.applyHistoricalQualityMetrics(ctx, &report); err != nil {
+		return QualityReport{}, err
+	}
 	return report, nil
+}
+
+func rankedPrecision(values []qualityObservation, limit int) (float64, int) {
+	if limit <= 0 {
+		return 0, 0
+	}
+	positives := 0
+	evaluated := 0
+	for _, value := range values {
+		positive, negative := precisionOutcome(value.Label)
+		if !positive && !negative {
+			continue
+		}
+		evaluated++
+		if positive {
+			positives++
+		}
+		if evaluated == limit {
+			break
+		}
+	}
+	if evaluated == 0 {
+		return 0, 0
+	}
+	return float64(positives) / float64(evaluated), evaluated
+}
+
+func precisionOutcome(label QualityLabel) (positive bool, negative bool) {
+	switch label {
+	case QualityRealTrend, QualityTooEarly, QualityTooLate:
+		return true, false
+	case QualityNoise, QualityDuplicate, QualityBadCluster:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func (s *Store) applyHistoricalQualityMetrics(ctx context.Context, report *QualityReport) error {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.trend_key, s.observed_at, s.lifecycle, s.source_breadth, s.source_count
+FROM trend_snapshots s
+JOIN quality_feedback f ON f.trend_key = s.trend_key
+WHERE f.id = (
+  SELECT f2.id
+  FROM quality_feedback f2
+  WHERE f2.trend_key = f.trend_key
+  ORDER BY f2.created_at DESC, f2.id DESC
+  LIMIT 1
+)
+AND f.label IN (?, ?, ?)
+ORDER BY s.trend_key, s.observed_at`, string(QualityRealTrend), string(QualityTooEarly), string(QualityTooLate))
+	if err != nil {
+		// Editorial-only test stores and early development databases may not have
+		// history enabled yet. Ranked label metrics are still useful without it.
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return nil
+		}
+		return fmt.Errorf("quality history query: %w", err)
+	}
+	defer rows.Close()
+
+	var current trendTiming
+	var trendCount int
+	var breadthTotal float64
+	var sourceCountTotal float64
+	var leadToBreaking []time.Duration
+	var emergingToRising []time.Duration
+	var risingToBreaking []time.Duration
+
+	finalize := func(value trendTiming) {
+		if !value.HasSnapshot {
+			return
+		}
+		trendCount++
+		breadthTotal += value.LatestBreadth
+		sourceCountTotal += float64(value.LatestSourceCount)
+		if !value.FirstSeen.IsZero() && !value.FirstBreaking.IsZero() && !value.FirstBreaking.Before(value.FirstSeen) {
+			leadToBreaking = append(leadToBreaking, value.FirstBreaking.Sub(value.FirstSeen))
+		}
+		if !value.FirstEmerging.IsZero() && !value.FirstRising.IsZero() && !value.FirstRising.Before(value.FirstEmerging) {
+			emergingToRising = append(emergingToRising, value.FirstRising.Sub(value.FirstEmerging))
+		}
+		if !value.FirstRising.IsZero() && !value.FirstBreaking.IsZero() && !value.FirstBreaking.Before(value.FirstRising) {
+			risingToBreaking = append(risingToBreaking, value.FirstBreaking.Sub(value.FirstRising))
+		}
+	}
+
+	for rows.Next() {
+		var trendKey, observedAt, lifecycle string
+		var breadth float64
+		var sourceCount int
+		if err := rows.Scan(&trendKey, &observedAt, &lifecycle, &breadth, &sourceCount); err != nil {
+			return err
+		}
+		observed, err := time.Parse(time.RFC3339Nano, observedAt)
+		if err != nil {
+			return fmt.Errorf("parse quality snapshot time: %w", err)
+		}
+		if current.TrendKey != "" && current.TrendKey != trendKey {
+			finalize(current)
+			current = trendTiming{}
+		}
+		if current.TrendKey == "" {
+			current.TrendKey = trendKey
+			current.FirstSeen = observed
+		}
+		current.HasSnapshot = true
+		current.LatestBreadth = breadth
+		current.LatestSourceCount = sourceCount
+		switch strings.ToUpper(strings.TrimSpace(lifecycle)) {
+		case "EMERGING":
+			if current.FirstEmerging.IsZero() {
+				current.FirstEmerging = observed
+			}
+		case "RISING":
+			if current.FirstRising.IsZero() {
+				current.FirstRising = observed
+			}
+		case "BREAKING":
+			if current.FirstBreaking.IsZero() {
+				current.FirstBreaking = observed
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	finalize(current)
+
+	if trendCount > 0 {
+		report.AverageSourceBreadth = breadthTotal / float64(trendCount)
+		report.AverageSourceCount = sourceCountTotal / float64(trendCount)
+	}
+	report.AverageLeadToBreakingMinutes = averageMinutes(leadToBreaking)
+	report.AverageEmergingToRisingMinutes = averageMinutes(emergingToRising)
+	report.AverageRisingToBreakingMinutes = averageMinutes(risingToBreaking)
+	return nil
+}
+
+func averageMinutes(values []time.Duration) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total time.Duration
+	for _, value := range values {
+		total += value
+	}
+	return total.Minutes() / float64(len(values))
 }
 
 func meanScores(values []int) float64 {
