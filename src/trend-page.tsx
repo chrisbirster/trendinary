@@ -133,7 +133,7 @@ function PropagationPath(props: { hops?: PropagationHop[] }) {
               <div {...sx(intelligenceStyles.hop)}>
                 <div {...sx(intelligenceStyles.hopName)}>{hop.source.name}</div>
                 <div {...sx(intelligenceStyles.hopMeta)}>
-                  First seen {formatTime(hop.first_seen)}<br />
+                  <strong>{hop.delay_label ?? (index() === 0 ? "origin" : "later")}</strong> · first seen {formatTime(hop.first_seen)}<br />
                   {hop.signal_count} signal{hop.signal_count === 1 ? "" : "s"} · engagement {hop.engagement}
                 </div>
               </div>
@@ -351,7 +351,7 @@ export function TrendPage() {
 
             <section {...sx(styles.section)} id="propagation">
               <div {...sx(styles.sectionHeader)}>
-                <div><h2 {...sx(styles.sectionTitle)}>How it spread</h2><p {...sx(styles.sectionCopy)}>Observed source order—not an invented narrative.</p></div>
+                <div><h2 {...sx(styles.sectionTitle)}>How it spread</h2><p {...sx(styles.sectionCopy)}>Observed source order with elapsed time from the first source—not an invented narrative.</p></div>
                 <div {...sx(styles.eyebrow)}>PROPAGATION</div>
               </div>
               <PropagationPath hops={current().propagation} />
