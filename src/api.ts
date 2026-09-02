@@ -44,6 +44,8 @@ export type PropagationHop = {
   last_seen: string;
   signal_count: number;
   engagement: number;
+  delay_minutes?: number;
+  delay_label?: string;
 };
 
 export type PerspectiveMix = {
@@ -76,6 +78,17 @@ export type Explanation = {
   evidence: Evidence[];
 };
 
+export type TrendQuality = {
+  attention: number;
+  velocity: number;
+  source_breadth: number;
+  community_breadth: number;
+  novelty: number;
+  confidence: number;
+  peep_score: number;
+  why_watching?: string[];
+};
+
 export type Trend = {
   id?: string;
   slug: string;
@@ -89,6 +102,7 @@ export type Trend = {
   reason: string;
   started: string;
   vibe: string;
+  quality: TrendQuality;
   sources: TrendSource[];
   timeline?: TimelineEvent[];
   top_voices?: ActorProfile[];
@@ -97,6 +111,19 @@ export type Trend = {
   explanation?: Explanation;
   lore?: string;
   why?: string;
+};
+
+export type FomoItem = {
+  trend_key: string;
+  slug: string;
+  name: string;
+  peak_score: number;
+  first_seen: string;
+  last_seen: string;
+  max_velocity: number;
+  source_breadth: number;
+  novelty: number;
+  summary: string;
 };
 
 export type AskAnswer = {
@@ -142,6 +169,18 @@ async function getJSON<T>(path: string): Promise<T> {
 
 export async function fetchTrends(): Promise<Trend[]> {
   return (await getJSON<Envelope<Trend[]>>("/api/v1/trends")).data;
+}
+
+export async function fetchPeep(limit = 12): Promise<Trend[]> {
+  return (await getJSON<Envelope<Trend[]>>(`/api/v1/peep?limit=${encodeURIComponent(String(limit))}`)).data;
+}
+
+export async function fetchFomo(hours = 24, limit = 7): Promise<FomoItem[]> {
+  return (
+    await getJSON<Envelope<FomoItem[]>>(
+      `/api/v1/fomo?hours=${encodeURIComponent(String(hours))}&limit=${encodeURIComponent(String(limit))}`,
+    )
+  ).data;
 }
 
 export async function fetchTrend(slug: string): Promise<Trend> {
