@@ -82,13 +82,27 @@ This is important because evaluation must replay what the detector actually saw.
 
 `GET /api/v1/admin/quality/report` derives the following from latest human labels:
 
+- **Top-10 precision** — precision among the ten highest-scoring precision-eligible labeled candidates
+- **Top-25 precision** — the same measurement over the top twenty-five
 - **precision proxy** — usable trends divided by usable trends plus noise/duplicate/bad-cluster labels
+- **false-positive rate** — the complement of the precision proxy over the same eligible labels
+- **duplicate-cluster rate** — duplicate outcomes divided by all latest stable-trend labels
 - **early-hit rate** — good early catches compared with “detected too late” outcomes
 - **cluster health** — penalizes duplicate and bad-cluster labels
 - **naming health** — penalizes wrong canonical-name labels
 - positive mean score
 - noise mean score
 - a conservative recommended minimum public score
+
+When persisted trend snapshots exist for positively labeled trends, the report also measures:
+
+- average latest normalized source breadth
+- average latest distinct source count
+- average lead time from Trendinary's first observation to the first `BREAKING` snapshot
+- average `EMERGING → RISING` elapsed time
+- average `RISING → BREAKING` elapsed time
+
+Timing measurements are based on observed lifecycle snapshots. They describe Trendinary's detection progression; they do not claim causal propagation between sources.
 
 The threshold recommendation is diagnostic. It is not automatically applied to production scoring; changing a published detection gate remains a versioned code decision.
 
