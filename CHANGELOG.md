@@ -4,6 +4,12 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-01
+
+### Fixed
+
+- Production SST deployment now prints full provider/deployment logs so Cloudflare failures expose their actionable root cause in GitHub Actions instead of only the generic unexpected-error message.
+
 ## [0.2.3] - 2026-09-01
 
 ### Fixed
