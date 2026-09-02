@@ -4,6 +4,36 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-01
+
+### Fixed
+
+- Production Cloudflare deployment no longer creates a legacy Page Rule for `www.trendinary.com`; the apex `trendinary.com` Worker/DNS deployment now avoids the Page Rules permission entirely. A modern `www` redirect can be added separately.
+
+## [0.2.4] - 2026-09-01
+
+### Fixed
+
+- Production SST deployment now prints full provider/deployment logs so Cloudflare failures expose their actionable root cause in GitHub Actions instead of only the generic unexpected-error message.
+
+## [0.2.3] - 2026-09-01
+
+### Fixed
+
+- Production Cloudflare deployment now uses Cloudflare provider `6.15.0`, satisfying the minimum provider version required by SST 4.17.1.
+
+## [0.2.2] - 2026-09-01
+
+### Fixed
+
+- Production Fly deploy now invokes `flyctl deploy`, matching the binary installed by the GitHub Actions Fly setup step.
+
+## [0.2.1] - 2026-09-01
+
+### Fixed
+
+- Production deploy preflight now recognizes staged Fly secrets correctly before the first Machine exists.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added
