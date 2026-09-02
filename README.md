@@ -4,7 +4,7 @@
 
 Trendinary watches public internet signals, detects unusual acceleration, clusters related observations into stable trend entities, explains why they are moving, and tracks how attention propagates across sources.
 
-It also contains a private editorial system under `/admin` for deciding what is worth reading/watching/listening to and assembling saved material into newsletter drafts.
+It also contains a private editorial system under `/admin` for deciding what is worth reading/watching/listening to, calibrating trend detection quality, and assembling saved material into newsletter drafts.
 
 ## Stack
 
@@ -29,14 +29,33 @@ Feature work targets `dev`. Normal releases are `dev -> main` pull requests. `ma
 ## Public product
 
 - `/` — NOW live scoreboard
-- `/peep` — early/accelerating signals
-- `/fomo` — catch-up product surface
+- `/peep` — early/accelerating signals ranked by a dedicated PEEP score
+- `/fomo` — finite, history-backed catch-up briefing
 - `/following` — personal-radar product surface
-- `/trend/:slug` — stable trend intelligence page with momentum, propagation, perspective, evidence, WTF/LORE, and Ask
+- `/trend/:slug` — stable trend intelligence page with momentum, timed propagation, perspective, evidence, WTF/LORE, and Ask
 
 Current discovery sources include Hacker News, ATProto Jetstream/Bluesky, GitHub, configurable RSS/Atom, Wikipedia pageviews, GDELT DOC, optional YouTube, and optional quota-aware NewsData.
 
 Direct Reddit API ingestion is not an active dependency.
+
+## Signal Quality v3
+
+Trendinary Score v3 keeps the 0–100 public score but shifts weight from absolute attention toward unexpected acceleration and independent-source spread:
+
+```text
+attention          14%
+velocity           34%
+source breadth     19%
+community breadth  13%
+novelty            12%
+confidence           8%
+```
+
+PEEP has a separate early-signal score so a small topic moving abnormally fast can outrank a famous topic behaving normally. It emphasizes velocity, source breadth, community breadth, and novelty, then confidence-gates the result.
+
+The scanner also persists the exact signal membership of each stable trend. Private human labels can therefore be replayed through the deterministic entity-aware clusterer instead of evaluating against reconstructed summaries.
+
+See `docs/signal-quality-v3.md`.
 
 ## Private editorial admin
 
@@ -55,7 +74,20 @@ Important routes:
 - `/admin/notes`
 - `/admin/issues`
 - `/admin/sources`
+- `/admin/quality` — label live trends and inspect detection/replay quality
 - `/admin/trash`
+
+The quality workspace accepts these durable labels:
+
+- real trend
+- noise
+- duplicate
+- interesting / caught early
+- detected too late
+- bad cluster
+- wrong canonical name
+
+It reports a precision proxy, early-hit rate, cluster health, naming health, a score-threshold recommendation, and deterministic replay precision/recall. These metrics are for detection calibration, not engagement optimization.
 
 TechURLs is the first private editorial discovery adapter.
 
@@ -160,7 +192,7 @@ TURSO_AUTH_TOKEN
 
 `fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so production startup fails closed if Turso is not configured. No Fly volume is required.
 
-Turso stores public trend history, stable identities, Jetstream cursors, quota state, and the private editorial database. R2 remains the archive target for raw source provenance/replay payloads rather than the primary database.
+Turso stores public trend history, stable identities, signal memberships, human quality labels, Jetstream cursors, quota state, and the private editorial database. R2 remains the archive target for raw source provenance/replay payloads rather than the primary database.
 
 See `docs/turso.md` and `docs/architecture.md`.
 
@@ -171,6 +203,7 @@ See `docs/turso.md` and `docs/architecture.md`.
 - `docs/architecture.md`
 - `docs/attention-platform.md`
 - `docs/trend-score.md`
+- `docs/signal-quality-v3.md`
 - `docs/news-discovery.md`
 - `docs/editorial-pipeline.md`
 - `docs/sources/techurls.md`

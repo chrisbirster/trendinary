@@ -53,6 +53,10 @@ func (s *adminServer) routes(){
 	s.mux.HandleFunc("PUT /api/v1/admin/issues/{id}",s.updateIssue)
 	s.mux.HandleFunc("POST /api/v1/admin/issues/{id}/items",s.addIssueItem)
 	s.mux.HandleFunc("DELETE /api/v1/admin/issues/{id}/items/{itemId}",s.removeIssueItem)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/feedback",s.qualityFeedback)
+	s.mux.HandleFunc("POST /api/v1/admin/quality/trends/{slug}/feedback",s.putQualityFeedback)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/report",s.qualityReport)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/replay",s.qualityReplay)
 }
 
 func (s *adminServer) authorized(w http.ResponseWriter,r *http.Request)bool{
@@ -78,7 +82,7 @@ func (s *adminServer) list(base StateQuery) http.HandlerFunc{return func(w http.
 	w.Header().Set("Cache-Control","no-store");writeJSON(w,http.StatusOK,map[string]any{"data":values})
 }}
 
-func(s *adminServer) notes(w http.ResponseWriter,r *http.Request){values,err:=s.service.Store().ListContent(r.Context(),"","",false,"newest",time.Time{},500);if err!=nil{writeJSON(w,500,map[string]any{"error":"notes unavailable"});return};out:=make([]editorial.ContentItem,0);for _,item:=range values{if item.Note!=nil&&(item.State==editorial.StateConsumed||item.State==editorial.StateSaved){out=append(out,item)}};writeJSON(w,200,map[string]any{"data":out})}
+func(s *adminServer) notes(w http.ResponseWriter,r *http.Request){worthSharing,err:=optionalBoolQuery(r,"worth_sharing");if err!=nil{writeJSON(w,http.StatusBadRequest,map[string]any{"error":err.Error()});return};values,err:=listEditorialNotes(r.Context(),s.service,worthSharing);if err!=nil{writeJSON(w,http.StatusInternalServerError,map[string]any{"error":"notes unavailable"});return};w.Header().Set("Cache-Control","no-store");writeJSON(w,http.StatusOK,map[string]any{"data":values})}
 func(s *adminServer) content(w http.ResponseWriter,r *http.Request){value,ok,err:=s.service.Store().Content(r.Context(),r.PathValue("id"));if err!=nil{writeJSON(w,500,map[string]any{"error":"content unavailable"});return};if !ok{writeJSON(w,404,map[string]any{"error":"content not found"});return};writeJSON(w,200,map[string]any{"data":value})}
 func(s *adminServer) openContent(w http.ResponseWriter,r *http.Request){if err:=s.service.Store().MarkOpened(r.Context(),r.PathValue("id"));err!=nil{writeJSON(w,500,map[string]any{"error":"could not mark opened"});return};s.content(w,r)}
 func(s *adminServer) enrichContent(w http.ResponseWriter,r *http.Request){value,err:=s.service.Enrich(r.Context(),r.PathValue("id"));if err!=nil{writeJSON(w,502,map[string]any{"error":err.Error()});return};writeJSON(w,200,map[string]any{"data":value})}

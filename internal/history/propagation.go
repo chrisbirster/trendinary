@@ -84,6 +84,7 @@ INSERT OR REPLACE INTO trend_source_observations (
 // Propagation returns the durable source path for a trend. First-seen is the
 // earliest observation across scans; counts/engagement use the maximum observed
 // cluster values so a shrinking rolling window cannot erase a prior breakout.
+// V3 also annotates each hop with elapsed time from the first observed source.
 func (s *Store) Propagation(ctx context.Context, trendID string) ([]model.PropagationHop, error) {
 	if trendID == "" {
 		return nil, nil
@@ -121,5 +122,46 @@ GROUP BY source_domain`, trendID)
 		}
 		return out[i].FirstSeen < out[j].FirstSeen
 	})
+	if len(out) == 0 {
+		return out, nil
+	}
+	origin, err := time.Parse(time.RFC3339Nano, out[0].FirstSeen)
+	if err != nil {
+		if parsed, fallbackErr := time.Parse(time.RFC3339, out[0].FirstSeen); fallbackErr == nil {
+			origin = parsed
+		} else {
+			return out, nil
+		}
+	}
+	for index := range out {
+		seen, err := time.Parse(time.RFC3339Nano, out[index].FirstSeen)
+		if err != nil {
+			seen, err = time.Parse(time.RFC3339, out[index].FirstSeen)
+		}
+		if err != nil {
+			continue
+		}
+		minutes := int(seen.Sub(origin).Round(time.Minute) / time.Minute)
+		if minutes < 0 {
+			minutes = 0
+		}
+		out[index].DelayMinutes = minutes
+		out[index].DelayLabel = propagationDelayLabel(minutes)
+	}
 	return out, nil
+}
+
+func propagationDelayLabel(minutes int) string {
+	if minutes <= 0 {
+		return "origin"
+	}
+	if minutes < 60 {
+		return fmt.Sprintf("+%dm", minutes)
+	}
+	hours := minutes / 60
+	remaining := minutes % 60
+	if remaining == 0 {
+		return fmt.Sprintf("+%dh", hours)
+	}
+	return fmt.Sprintf("+%dh %dm", hours, remaining)
 }

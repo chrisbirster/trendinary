@@ -2,7 +2,7 @@ package engine
 
 import "math"
 
-const ScoreVersion = "0.1"
+const ScoreVersion = "0.3"
 
 type ScoreInput struct {
 	Attention        float64 `json:"attention"`
@@ -24,10 +24,10 @@ type ScoreBreakdown struct {
 	Confidence       float64 `json:"confidence"`
 }
 
-// Score calculates the first deterministic Trendinary Score. All inputs are
-// normalized to 0..1 by the metrics pipeline before they reach this function.
-// Velocity gets the largest weight because Trendinary is trying to detect
-// unusual movement rather than merely reward already-popular subjects.
+// Score calculates Trendinary Score v3. Inputs are normalized to 0..1 before
+// they reach this function. V3 deliberately moves weight away from absolute
+// attention and toward velocity plus independent-source breadth: Trendinary is
+// trying to notice surprising movement before a popularity leaderboard would.
 func Score(input ScoreInput) ScoreBreakdown {
 	input.Attention = clamp01(input.Attention)
 	input.Velocity = clamp01(input.Velocity)
@@ -37,10 +37,10 @@ func Score(input ScoreInput) ScoreBreakdown {
 	input.Confidence = clamp01(input.Confidence)
 
 	weighted :=
-		0.20*input.Attention +
-			0.30*input.Velocity +
-			0.18*input.SourceBreadth +
-			0.12*input.CommunityBreadth +
+		0.14*input.Attention +
+			0.34*input.Velocity +
+			0.19*input.SourceBreadth +
+			0.13*input.CommunityBreadth +
 			0.12*input.Novelty +
 			0.08*input.Confidence
 
