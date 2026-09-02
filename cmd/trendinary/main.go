@@ -96,7 +96,8 @@ func main() {
 		httpapi.WithHistory(historical),
 		httpapi.WithRuntime(runtimeStatus, streamWindow),
 	)
-	handler := httpapi.NewAdmin(publicHandler, editorialService, os.Getenv("TRENDINARY_ADMIN_PASSWORD"))
+	adminHandler := httpapi.NewAdmin(publicHandler, editorialService, os.Getenv("TRENDINARY_ADMIN_PASSWORD"))
+	handler := httpapi.NewIntegration(adminHandler, editorialService, os.Getenv("TRENDINARY_INTEGRATION_TOKEN"))
 	server := &http.Server{
 		Addr:              ":" + port,
 		Handler:           handler,
@@ -136,7 +137,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("trendinary listening", "addr", server.Addr, "storage", storageBackend, "discovery_sources", len(discoverySources)+2, "admin_enabled", os.Getenv("TRENDINARY_ADMIN_PASSWORD") != "")
+	slog.Info("trendinary listening", "addr", server.Addr, "storage", storageBackend, "discovery_sources", len(discoverySources)+2, "admin_enabled", os.Getenv("TRENDINARY_ADMIN_PASSWORD") != "", "integration_enabled", os.Getenv("TRENDINARY_INTEGRATION_TOKEN") != "")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
