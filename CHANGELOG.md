@@ -4,6 +4,23 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+### Added
+
+- Signal Quality v3 private `/admin/quality` calibration workspace with durable labels for real trends, noise, duplicates, early/late timing, bad clusters, and canonical-name mistakes.
+- Exact persisted signal-to-stable-trend memberships so production human labels can replay the observations that actually formed each detected trend.
+- Human-label quality reporting for precision proxy, early-hit rate, cluster health, naming health, positive/noise mean scores, and a conservative publication-threshold recommendation.
+- Deterministic production replay benchmark that feeds persisted labeled signal memberships back through the entity-aware clusterer and reports pairwise precision/recall.
+- Dedicated PEEP score and `GET /api/v1/peep` endpoint for confidence-gated early-signal ranking by velocity, source breadth, community spread, and novelty.
+- History-backed finite FOMO briefing through `GET /api/v1/fomo`, defaulting to the strongest seven trends from the last 24 hours.
+- Propagation timing deltas that show elapsed time from the first observed source rather than only absolute timestamps.
+
+### Changed
+
+- Trendinary Score advances to model version `0.3`, reducing raw-attention weight and increasing velocity plus independent-source/community breadth so unexpected acceleration matters more than fame.
+- `/peep` now consumes the live PEEP API instead of filtering the main leaderboard client-side.
+- `/fomo` now consumes persisted trend history instead of static prototype data.
+- Trend detail propagation presents source order with observed elapsed-time labels such as `origin`, `+14m`, and `+1h 12m`.
+
 ## [0.2.5] - 2026-09-01
 
 ### Fixed

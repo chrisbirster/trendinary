@@ -71,23 +71,25 @@ type TimelineEvent struct {
 }
 
 type PropagationHop struct {
-	Source      Source `json:"source"`
-	FirstSeen   string `json:"first_seen"`
-	LastSeen    string `json:"last_seen"`
-	SignalCount int    `json:"signal_count"`
-	Engagement  int    `json:"engagement"`
+	Source       Source `json:"source"`
+	FirstSeen    string `json:"first_seen"`
+	LastSeen     string `json:"last_seen"`
+	SignalCount  int    `json:"signal_count"`
+	Engagement   int    `json:"engagement"`
+	DelayMinutes int    `json:"delay_minutes,omitempty"`
+	DelayLabel   string `json:"delay_label,omitempty"`
 }
 
 type PerspectiveMix struct {
-	RatedSources int `json:"rated_sources"`
-	TotalSources int `json:"total_sources"`
-	Left         int `json:"left"`
-	LeanLeft     int `json:"lean_left"`
-	Center       int `json:"center"`
-	LeanRight    int `json:"lean_right"`
-	Right        int `json:"right"`
-	Mixed        int `json:"mixed"`
-	Unrated      int `json:"unrated"`
+	RatedSources int    `json:"rated_sources"`
+	TotalSources int    `json:"total_sources"`
+	Left         int    `json:"left"`
+	LeanLeft     int    `json:"lean_left"`
+	Center       int    `json:"center"`
+	LeanRight    int    `json:"lean_right"`
+	Right        int    `json:"right"`
+	Mixed        int    `json:"mixed"`
+	Unrated      int    `json:"unrated"`
 	Note         string `json:"note"`
 }
 
@@ -108,6 +110,19 @@ type Explanation struct {
 	Evidence    []Evidence `json:"evidence"`
 }
 
+// TrendQuality exposes the normalized inputs that make an early signal useful.
+// PEEPScore intentionally emphasizes slope and spread rather than raw fame.
+type TrendQuality struct {
+	Attention        float64  `json:"attention"`
+	Velocity         float64  `json:"velocity"`
+	SourceBreadth    float64  `json:"source_breadth"`
+	CommunityBreadth float64  `json:"community_breadth"`
+	Novelty          float64  `json:"novelty"`
+	Confidence       float64  `json:"confidence"`
+	PeepScore        int      `json:"peep_score"`
+	WhyWatching      []string `json:"why_watching,omitempty"`
+}
+
 type Trend struct {
 	ID       string   `json:"id,omitempty"`
 	Slug     string   `json:"slug"`
@@ -121,13 +136,14 @@ type Trend struct {
 	Reason   string   `json:"reason"`
 	Started  string   `json:"started"`
 	Vibe     string   `json:"vibe"`
+	Quality  TrendQuality `json:"quality"`
 
-	Sources      []Source         `json:"sources"`
-	Timeline     []TimelineEvent  `json:"timeline,omitempty"`
-	TopVoices    []ActorProfile   `json:"top_voices,omitempty"`
-	Propagation  []PropagationHop `json:"propagation,omitempty"`
-	Perspective  PerspectiveMix   `json:"perspective"`
-	Explanation  *Explanation     `json:"explanation,omitempty"`
-	Lore         string           `json:"lore,omitempty"`
-	Why          string           `json:"why,omitempty"`
+	Sources     []Source         `json:"sources"`
+	Timeline    []TimelineEvent  `json:"timeline,omitempty"`
+	TopVoices   []ActorProfile   `json:"top_voices,omitempty"`
+	Propagation []PropagationHop `json:"propagation,omitempty"`
+	Perspective PerspectiveMix   `json:"perspective"`
+	Explanation *Explanation     `json:"explanation,omitempty"`
+	Lore        string           `json:"lore,omitempty"`
+	Why         string           `json:"why,omitempty"`
 }

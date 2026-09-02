@@ -58,6 +58,8 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
+	mux.HandleFunc("GET /api/v1/peep", server.peep)
+	mux.HandleFunc("GET /api/v1/fomo", server.fomo)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/propagation", server.trendPropagation)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/explanation", server.trendExplanation)
@@ -228,16 +230,17 @@ func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
 		"data": map[string]any{
 			"version": engine.ScoreVersion,
 			"range":   "0-100",
-			"principle": "Score unexpected attention, not fame. Metrics are normalized against historical baselines before entering the scoring function.",
+			"principle": "Score unexpected attention, not fame. V3 shifts weight from absolute attention toward velocity and independent-source breadth, then measures quality against durable human labels.",
 			"weights": map[string]float64{
-				"attention":         0.20,
-				"velocity":          0.30,
-				"source_breadth":    0.18,
-				"community_breadth": 0.12,
+				"attention":         0.14,
+				"velocity":          0.34,
+				"source_breadth":    0.19,
+				"community_breadth": 0.13,
 				"novelty":           0.12,
 				"confidence":        0.08,
 			},
-			"warning": "Version 0.1 is an explicit starting model. Thresholds will be calibrated against stored historical outcomes rather than optimized for engagement.",
+			"peep": "PEEP is a separate confidence-gated early-signal score emphasizing velocity, source breadth, community breadth, and novelty.",
+			"calibration": "Private human labels feed precision, timeliness, cluster-health, naming-health, threshold recommendations, and deterministic replay evaluation.",
 		},
 	})
 }

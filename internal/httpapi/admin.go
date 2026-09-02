@@ -53,6 +53,10 @@ func (s *adminServer) routes(){
 	s.mux.HandleFunc("PUT /api/v1/admin/issues/{id}",s.updateIssue)
 	s.mux.HandleFunc("POST /api/v1/admin/issues/{id}/items",s.addIssueItem)
 	s.mux.HandleFunc("DELETE /api/v1/admin/issues/{id}/items/{itemId}",s.removeIssueItem)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/feedback",s.qualityFeedback)
+	s.mux.HandleFunc("POST /api/v1/admin/quality/trends/{slug}/feedback",s.putQualityFeedback)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/report",s.qualityReport)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/replay",s.qualityReplay)
 }
 
 func (s *adminServer) authorized(w http.ResponseWriter,r *http.Request)bool{
