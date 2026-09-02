@@ -30,7 +30,6 @@ export default $config({
       url: true,
       domain: {
         name: "trendinary.com",
-        redirects: ["www.trendinary.com"],
         dns: sst.cloudflare.dns(),
       },
     });
