@@ -72,7 +72,6 @@ func main() {
 		envDuration("TRENDINARY_RECENT_SIGNAL_TTL", 30*time.Minute),
 	)
 	discoverySources, inactiveSources := buildDiscoverySources(historical)
-	sourceUniverse := max(8, len(discoverySources)+2)
 	blueskyClient := bluesky.NewClient(nil)
 	scan := scanner.New(
 		hackernews.NewClient(nil),
@@ -84,7 +83,10 @@ func main() {
 			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
 			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
-			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", sourceUniverse),
+			// SourceUniverse is a corroboration saturation target, not the number
+			// of configured adapters. Adding another section feed must not lower
+			// every existing trend's score when its evidence is unchanged.
+			SourceUniverse: envInt("TRENDINARY_SOURCE_UNIVERSE", 8),
 		},
 	)
 
@@ -355,15 +357,17 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
-func envDuration(name string, fallback time.Duration) time.Duration {
+func envDuration(name, fallback string) time.Duration {
 	value := os.Getenv(name)
 	if value == "" {
-		return fallback
+		parsed, _ := time.ParseDuration(fallback)
+		return parsed
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed < 15*time.Second {
+		fallbackDuration, _ := time.ParseDuration(fallback)
 		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallback)
-		return fallback
+		return fallbackDuration
 	}
 	return parsed
 }
