@@ -7,10 +7,10 @@ import {
   AdminNewIssuePage,
   AdminNotesPage,
   AdminQueuePage,
-  AdminSourcesPage,
   AdminTrashPage,
 } from "./admin";
 import { AdminQualityPage } from "./admin-quality";
+import { AdminSourcesPage } from "./admin-source-ops";
 import { FollowingPage, HomePage, NotFoundPage } from "./pages";
 import { SignalFomoPage, SignalPeepPage } from "./signal-quality-pages";
 import { TrendPage } from "./trend-page";
