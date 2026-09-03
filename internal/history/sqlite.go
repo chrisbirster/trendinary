@@ -144,35 +144,43 @@ CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_time ON trend_snapshots(tre
 	return nil
 }
 
-func (s *Store) ensureSignalsDiscoveryChannel(ctx context.Context) error {
+func (s *Store) hasSignalsDiscoveryChannel(ctx context.Context) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(signals)`)
 	if err != nil {
-		return fmt.Errorf("inspect signals schema: %w", err)
+		return false, fmt.Errorf("inspect signals schema: %w", err)
 	}
-	found := false
+	defer rows.Close()
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var name, columnType string
 		var defaultValue any
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan signals schema: %w", err)
+			return false, fmt.Errorf("scan signals schema: %w", err)
 		}
 		if name == "discovery_channel" {
-			found = true
+			return true, nil
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("inspect signals schema rows: %w", err)
+		return false, fmt.Errorf("inspect signals schema rows: %w", err)
 	}
-	if err := rows.Close(); err != nil {
+	return false, nil
+}
+
+func (s *Store) ensureSignalsDiscoveryChannel(ctx context.Context) error {
+	found, err := s.hasSignalsDiscoveryChannel(ctx)
+	if err != nil {
 		return err
 	}
 	if found {
 		return nil
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE signals ADD COLUMN discovery_channel TEXT NOT NULL DEFAULT ''`); err != nil {
+		// A rolling deploy can start two new machines against the same Turso DB.
+		// If another process won the ALTER race, accept the now-correct schema.
+		if foundAfterRace, inspectErr := s.hasSignalsDiscoveryChannel(ctx); inspectErr == nil && foundAfterRace {
+			return nil
+		}
 		return fmt.Errorf("add signals discovery channel: %w", err)
 	}
 	return nil
