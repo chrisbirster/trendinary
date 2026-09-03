@@ -23,6 +23,11 @@ const (
 	QualityTooLate    QualityLabel = "detected-too-late"
 	QualityBadCluster QualityLabel = "bad-cluster"
 	QualityWrongName  QualityLabel = "wrong-canonical-name"
+
+	// Fixed-width fractional seconds preserve chronological lexical order for
+	// newly written rows. Queries also use julianday + rowid so older variable-
+	// width RFC3339Nano rows remain deterministic.
+	qualityTimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
 var qualitySchemaReady sync.Map
@@ -161,7 +166,7 @@ INSERT INTO quality_feedback (
  id, trend_key, trend_slug, trend_name, label, note, score, lifecycle, created_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		value.ID, value.TrendKey, value.TrendSlug, value.TrendName, string(value.Label),
-		value.Note, value.Score, value.Lifecycle, value.CreatedAt.UTC().Format(time.RFC3339Nano))
+		value.Note, value.Score, value.Lifecycle, value.CreatedAt.UTC().Format(qualityTimestampLayout))
 	if err != nil {
 		return QualityFeedback{}, fmt.Errorf("record quality feedback: %w", err)
 	}
@@ -181,7 +186,7 @@ func (s *Store) QualityFeedback(ctx context.Context, limit int) ([]QualityFeedba
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, trend_key, trend_slug, trend_name, label, note, score, lifecycle, created_at
 FROM quality_feedback
-ORDER BY created_at DESC
+ORDER BY julianday(created_at) DESC, rowid DESC
 LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -212,14 +217,14 @@ func (s *Store) QualityReport(ctx context.Context) (QualityReport, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT label, score
 FROM quality_feedback f
-WHERE id = (
-  SELECT f2.id
+WHERE rowid = (
+  SELECT f2.rowid
   FROM quality_feedback f2
   WHERE f2.trend_key = f.trend_key
-  ORDER BY f2.created_at DESC, f2.id DESC
+  ORDER BY julianday(f2.created_at) DESC, f2.rowid DESC
   LIMIT 1
 )
-ORDER BY score DESC, created_at DESC`)
+ORDER BY score DESC, julianday(created_at) DESC, rowid DESC`)
 	if err != nil {
 		return QualityReport{}, err
 	}
@@ -327,11 +332,11 @@ func (s *Store) applyHistoricalQualityMetrics(ctx context.Context, report *Quali
 SELECT s.trend_key, s.observed_at, s.lifecycle, s.source_breadth, s.source_count
 FROM trend_snapshots s
 JOIN quality_feedback f ON f.trend_key = s.trend_key
-WHERE f.id = (
-  SELECT f2.id
+WHERE f.rowid = (
+  SELECT f2.rowid
   FROM quality_feedback f2
   WHERE f2.trend_key = f.trend_key
-  ORDER BY f2.created_at DESC, f2.id DESC
+  ORDER BY julianday(f2.created_at) DESC, f2.rowid DESC
   LIMIT 1
 )
 AND f.label IN (?, ?, ?)
@@ -478,8 +483,12 @@ SELECT f.trend_key, f.label,
 FROM quality_feedback f
 JOIN trend_signal_memberships m ON m.trend_key = f.trend_key
 JOIN signals sig ON sig.id = m.signal_id
-WHERE f.created_at = (
-  SELECT MAX(f2.created_at) FROM quality_feedback f2 WHERE f2.trend_key = f.trend_key
+WHERE f.rowid = (
+  SELECT f2.rowid
+  FROM quality_feedback f2
+  WHERE f2.trend_key = f.trend_key
+  ORDER BY julianday(f2.created_at) DESC, f2.rowid DESC
+  LIMIT 1
 )
 ORDER BY f.trend_key, m.observed_at
 LIMIT 2500`)
