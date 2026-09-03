@@ -12,6 +12,8 @@ import (
 	"github.com/chrisbirster/trendinary/internal/signals"
 )
 
+const rollingEvidenceWindow = 24 * time.Hour
+
 // RunWithSourcesV2 is the calibrated multi-source path. Detection Quality v3
 // builds on this pipeline by persisting cluster memberships for human replay
 // evaluation and scoring the resulting stable entities with Trendinary Score v3.
@@ -43,11 +45,14 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 			continue
 		}
 		values, err := source.Discover(ctx)
+		// Cadenced sources can return their last good cached batch together with a
+		// refresh error. Preserve that evidence while surfacing the warning.
+		if len(values) > 0 {
+			discovery = append(discovery, values...)
+		}
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s discovery: %v", source.Name(), err))
-			continue
 		}
-		discovery = append(discovery, values...)
 	}
 	discovery = deduplicateSignals(discovery)
 	filtered := filterDiscoveryNoise(discovery)
@@ -128,9 +133,19 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		if err := s.history.RecordTrendSignals(ctx, entity.ID, cluster.Signals, now); err != nil {
 			warnings = append(warnings, fmt.Sprintf("quality membership %s: %v", entity.ID, err))
 		}
-		stable := cluster
-		stable.Key = entity.ID
-		trend, snapshot, err := s.scoreClusterV3(ctx, stable, now, calibration)
+
+		historical, err := s.history.TrendSignals(ctx, entity.ID, now.Add(-rollingEvidenceWindow), 1000)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("rolling evidence %s: %v", entity.ID, err))
+			historical = nil
+		}
+		related := relatedEvidence(cluster.Signals, historical, s.config.ClusterThreshold)
+		evidenceSignals := deduplicateSignals(append(append([]model.Signal(nil), cluster.Signals...), related...))
+		current := cluster
+		current.Key = entity.ID
+		evidence := engine.Cluster{Key: entity.ID, Signals: evidenceSignals}
+
+		trend, snapshot, err := s.scoreClusterV3(ctx, current, evidence, now, calibration)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("score %s: %v", entity.ID, err))
 			continue
@@ -139,7 +154,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		trend.Slug = entity.Slug
 		trend.Aliases = entity.Aliases
 		trend.Name = clusterName(cluster)
-		if err := s.decorateTrend(ctx, &trend, entity, cluster, now); err != nil {
+		if err := s.decorateTrend(ctx, &trend, entity, evidence, now); err != nil {
 			warnings = append(warnings, fmt.Sprintf("decorate %s: %v", entity.ID, err))
 		}
 		if err := s.history.RecordSnapshot(ctx, snapshot); err != nil {
