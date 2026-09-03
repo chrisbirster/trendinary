@@ -11,9 +11,14 @@ import (
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
-func (s *Scanner) scoreClusterV3(ctx context.Context, cluster engine.Cluster, now time.Time, calibration history.Calibration) (model.Trend, history.Snapshot, error) {
-	raw := rawMetrics(cluster)
-	baseline, err := s.history.Baseline(ctx, cluster.Key, now.Add(-s.config.BaselineWindow))
+// scoreClusterV3 keeps instantaneous attention/velocity grounded in the current
+// scan while source/community breadth comes from the related rolling evidence
+// window. This prevents old signals from inflating attention but lets the UI and
+// score remember that an event propagated across publishers between scans.
+func (s *Scanner) scoreClusterV3(ctx context.Context, current, evidence engine.Cluster, now time.Time, calibration history.Calibration) (model.Trend, history.Snapshot, error) {
+	raw := rawMetrics(current)
+	evidenceRaw := rawMetrics(evidence)
+	baseline, err := s.history.Baseline(ctx, current.Key, now.Add(-s.config.BaselineWindow))
 	if err != nil {
 		return model.Trend{}, history.Snapshot{}, err
 	}
@@ -23,8 +28,8 @@ func (s *Scanner) scoreClusterV3(ctx context.Context, cluster engine.Cluster, no
 	}
 	attention := saturating(raw.RawAttention, scale)
 	velocity := velocityScore(raw.RawAttention, baseline.AverageAttention, baseline.Observations)
-	sourceBreadth := clamp01(float64(raw.SourceCount) / float64(s.config.SourceUniverse))
-	communityBreadth := clamp01(float64(raw.CommunityCount) / 10)
+	sourceBreadth := clamp01(float64(evidenceRaw.SourceCount) / float64(s.config.SourceUniverse))
+	communityBreadth := clamp01(float64(evidenceRaw.CommunityCount) / 10)
 	novelty := noveltyScore(baseline, now)
 	confidence := clamp01(.15 + math.Min(float64(raw.SignalCount)/10, 1)*.55 + sourceBreadth*.30)
 	score := engine.Score(engine.ScoreInput{
@@ -43,14 +48,25 @@ func (s *Scanner) scoreClusterV3(ctx context.Context, cluster engine.Cluster, no
 		SourceBreadth: sourceBreadth, PreviouslyCold: previousCold,
 	}, thresholds)
 	trend := model.Trend{
-		Slug: cluster.Key, Name: clusterName(cluster), Category: "INTERNET", Score: score.Score,
+		Slug: current.Key, Name: clusterName(current), Category: "INTERNET", Score: score.Score,
 		Change: changeLabel(raw.RawAttention, baseline.AverageAttention, baseline.Observations),
-		Status: lifecycle, Started: startedLabel(cluster, now), Vibe: vibeLabel(sourceBreadth, velocity, novelty),
-		Reason: reasonLabel(raw, baseline, velocity), Sources: uniqueSources(cluster.Signals), Timeline: timeline(cluster, now),
+		Status: lifecycle, Started: startedLabel(evidence, now), Vibe: vibeLabel(sourceBreadth, velocity, novelty),
+		Reason: rollingReasonLabel(raw, evidenceRaw, baseline, velocity), Sources: uniqueSources(evidence.Signals), Timeline: timeline(evidence, now),
 		Quality: qualityBreakdown(score),
 	}
-	snapshot := history.Snapshot{TrendKey: cluster.Key, ObservedAt: now, Lifecycle: lifecycle, Score: score, Raw: raw}
+	snapshotRaw := raw
+	snapshotRaw.SourceCount = evidenceRaw.SourceCount
+	snapshotRaw.CommunityCount = evidenceRaw.CommunityCount
+	snapshot := history.Snapshot{TrendKey: current.Key, ObservedAt: now, Lifecycle: lifecycle, Score: score, Raw: snapshotRaw}
 	return trend, snapshot, nil
+}
+
+func rollingReasonLabel(current, evidence history.RawMetrics, baseline history.Baseline, velocity float64) string {
+	if baseline.Observations == 0 {
+		return fmt.Sprintf("New cluster: %d current signal(s); %d publisher source(s) observed in the rolling evidence window.", current.SignalCount, evidence.SourceCount)
+	}
+	ratio := current.RawAttention / math.Max(baseline.AverageAttention, 1)
+	return fmt.Sprintf("%d current signal(s); %d publisher source(s) in the rolling evidence window; attention is %.1fx its recent baseline (velocity %.0f/100).", current.SignalCount, evidence.SourceCount, ratio, velocity*100)
 }
 
 func qualityBreakdown(score engine.ScoreBreakdown) model.TrendQuality {
