@@ -70,6 +70,7 @@ func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 				union(i, j)
 			}
 		}
+	}
 
 	groups := map[int][]model.Signal{}
 	for i, signal := range input {
