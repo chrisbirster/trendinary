@@ -28,13 +28,14 @@ type SourceStatus struct {
 }
 
 type SourceMetadata struct {
-	ID       string
-	Name     string
-	Kind     string
-	Policy   string
-	URL      string
-	TermsURL string
-	Cadence  time.Duration
+	ID               string
+	Name             string
+	Kind             string
+	Policy           string
+	URL              string
+	TermsURL         string
+	Cadence          time.Duration
+	StartImmediately bool
 }
 
 type SourceStatusProvider interface {
@@ -66,7 +67,12 @@ func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledS
 	if meta.Name == "" {
 		meta.Name = source.Name()
 	}
-	return &ScheduledSource{source: source, meta: meta, now: func() time.Time { return time.Now().UTC() }}
+	now := time.Now().UTC()
+	next := time.Time{}
+	if !meta.StartImmediately {
+		next = now.Add(initialSourceDelay(meta.ID, meta.Cadence))
+	}
+	return &ScheduledSource{source: source, meta: meta, now: func() time.Time { return time.Now().UTC() }, next: next}
 }
 
 func (s *ScheduledSource) Name() string { return s.meta.Name }
@@ -134,15 +140,34 @@ func SourceStatuses(sources []DiscoverySource) []SourceStatus {
 	return out
 }
 
+func sourceHash(id string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return h.Sum32()
+}
+
+func initialSourceDelay(id string, cadence time.Duration) time.Duration {
+	if cadence <= 0 {
+		return 0
+	}
+	window := cadence
+	if window > 10*time.Minute {
+		window = 10 * time.Minute
+	}
+	if window < time.Minute {
+		window = time.Minute
+	}
+	fraction := float64(sourceHash(id)%10001) / 10000
+	return time.Duration(float64(window) * fraction)
+}
+
 func sourceJitter(id string, cadence time.Duration) time.Duration {
 	if cadence <= 0 {
 		return 0
 	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(id))
-	// Stable 0-10% positive jitter prevents a restart from making every source
-	// fire in the same second without introducing nondeterministic tests.
-	fraction := float64(h.Sum32()%1001) / 10000
+	// Stable 0-10% positive jitter prevents every source with the same cadence
+	// from drifting back into lockstep after a long-running process.
+	fraction := float64(sourceHash(id)%1001) / 10000
 	return time.Duration(float64(cadence) * fraction)
 }
 
