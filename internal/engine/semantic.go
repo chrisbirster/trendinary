@@ -74,13 +74,17 @@ func SameEvent(a, b model.Signal, lexicalThreshold float64) bool {
 	proximity := timeProximity(a.PublishedAt, b.PublishedAt)
 
 	score := lexical*.25 + overlap*.40 + entity*.25 + proximity*.10
-	if sharedEntity && overlap >= .30 {
+	// Different publishers often share only the central named entity while
+	// choosing completely different verbs and modifiers. A 20% term overlap is
+	// enough additional evidence when that entity agrees and timing is close;
+	// the final score still rejects unrelated stories about the same company.
+	if sharedEntity && overlap >= .20 {
 		score += .15
 	}
 	if score > 1 {
 		score = 1
 	}
-	return score >= .52 && (overlap >= .30 || entity >= .34)
+	return score >= .52 && (overlap >= .20 || entity >= .34)
 }
 
 func hasSharedKey(a, b map[string]struct{}) bool {
