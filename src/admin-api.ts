@@ -63,6 +63,46 @@ export type EditorialSource = {
   last_error?: string;
 };
 
+export type TrendSourceStatus = {
+  id: string;
+  name: string;
+  kind: string;
+  policy?: string;
+  url?: string;
+  terms_url?: string;
+  enabled: boolean;
+  cadence: number;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  next_run_at?: string;
+  last_error?: string;
+  failures: number;
+  cached_signals: number;
+};
+
+export type RuntimeHealth = {
+  stream: {
+    enabled: boolean;
+    connected: boolean;
+    host?: string;
+    last_event_at?: string;
+    last_error?: string;
+    reconnects: number;
+  };
+  scanner: {
+    enabled: boolean;
+    running: boolean;
+    last_started_at?: string;
+    last_success_at?: string;
+    last_error?: string;
+    signals: number;
+    clusters: number;
+    trends: number;
+    warnings: number;
+  };
+  sources?: TrendSourceStatus[];
+};
+
 export type IngestionRun = {
   id: string;
   source_id: string;
@@ -163,6 +203,7 @@ export async function putNote(id: string, note: string, worthSharing?: boolean) 
   return (await request<Envelope<ContentNote>>(`/api/v1/admin/content/${encodeURIComponent(id)}/note`, { method: "PUT", body: JSON.stringify({ note, worth_sharing: worthSharing }) })).data;
 }
 export async function fetchSources() { return (await request<Envelope<EditorialSource[]>>("/api/v1/admin/sources")).data; }
+export async function fetchTrendSourceHealth() { return request<RuntimeHealth>("/api/v1/health/streams"); }
 export async function setSourceEnabled(id: string, enabled: boolean) {
   return (await request<Envelope<EditorialSource[]>>(`/api/v1/admin/sources/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ enabled }) })).data;
 }
