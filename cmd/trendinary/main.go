@@ -29,6 +29,7 @@ import (
 	"github.com/chrisbirster/trendinary/internal/recent"
 	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 	"github.com/chrisbirster/trendinary/internal/scanner"
+	"github.com/chrisbirster/trendinary/internal/sourceregistry"
 	"github.com/chrisbirster/trendinary/internal/store"
 	webapp "github.com/chrisbirster/trendinary/internal/web"
 )
@@ -85,10 +86,12 @@ func main() {
 		},
 	)
 
-	discoverySources := buildDiscoverySources(historical)
+	discoverySources, inactiveSources := buildDiscoverySources(historical)
 	jetstreamEnabled := os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1"
 	scannerEnabled := os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1"
+	scanInterval := envDuration("TRENDINARY_SCAN_INTERVAL", 2*time.Minute)
 	runtimeStatus := runtimeinfo.New(jetstreamEnabled, scannerEnabled)
+	runtimeStatus.SetSources(runtimeSourceSnapshots(discoverySources, inactiveSources, scanInterval, jetstreamEnabled, scannerEnabled))
 
 	publicHandler := httpapi.New(
 		memory,
@@ -124,8 +127,7 @@ func main() {
 	}
 
 	if scannerEnabled {
-		interval := envDuration("TRENDINARY_SCAN_INTERVAL", 2*time.Minute)
-		go runScanner(ctx, scan, streamWindow, discoverySources, interval, runtimeStatus)
+		go runScanner(ctx, scan, streamWindow, discoverySources, inactiveSources, scanInterval, runtimeStatus, jetstreamEnabled, scannerEnabled)
 	}
 
 	go func() {
@@ -144,41 +146,104 @@ func main() {
 	}
 }
 
-func buildDiscoverySources(historical *history.Store) []scanner.DiscoverySource {
-	out := make([]scanner.DiscoverySource, 0, 6)
-	if os.Getenv("TRENDINARY_GITHUB_DISABLED") != "1" {
-		out = append(out, githubdiscovery.New(nil, os.Getenv("TRENDINARY_GITHUB_TOKEN"), envInt("TRENDINARY_GITHUB_LIMIT", 40)))
+func buildDiscoverySources(historical *history.Store) ([]scanner.DiscoverySource, []runtimeinfo.SourceSnapshot) {
+	out := make([]scanner.DiscoverySource, 0, 64)
+	configured := map[string]bool{}
+	add := func(source scanner.DiscoverySource, meta scanner.SourceMetadata) {
+		out = append(out, scanner.NewScheduledSource(source, meta))
+		configured[meta.ID] = true
 	}
+
+	if os.Getenv("TRENDINARY_GITHUB_DISABLED") != "1" {
+		add(githubdiscovery.New(nil, os.Getenv("TRENDINARY_GITHUB_TOKEN"), envInt("TRENDINARY_GITHUB_LIMIT", 40)), scanner.SourceMetadata{
+			ID: "github-api", Name: "GitHub repository discovery", Kind: "api", Policy: "official-api",
+			URL: "https://api.github.com/search/repositories", TermsURL: "https://docs.github.com/en/rest/search/search",
+			Cadence: 15 * time.Minute, StartImmediately: true,
+		})
+	}
+
 	if os.Getenv("TRENDINARY_RSS_DISABLED") != "1" {
-		if feeds := splitCSV(os.Getenv("TRENDINARY_RSS_FEEDS")); len(feeds) > 0 {
-			out = append(out, rss.New(nil, feeds, envInt("TRENDINARY_RSS_LIMIT", 50)))
+		for _, entry := range sourceregistry.EnabledRSS() {
+			add(rss.NewFeed(nil, entry.Name, entry.URL, envInt("TRENDINARY_RSS_FEED_LIMIT", 20)), scanner.SourceMetadata{
+				ID: entry.ID, Name: entry.Name, Kind: entry.Kind, Policy: string(entry.Policy), URL: entry.URL,
+				TermsURL: entry.TermsURL, Cadence: entry.Cadence,
+			})
+		}
+		for index, feed := range splitCSV(os.Getenv("TRENDINARY_RSS_FEEDS")) {
+			id := fmt.Sprintf("custom-rss-%d", index+1)
+			add(rss.NewFeed(nil, id, feed, envInt("TRENDINARY_RSS_FEED_LIMIT", 20)), scanner.SourceMetadata{
+				ID: id, Name: "Custom RSS · " + feed, Kind: "rss", Policy: "operator-configured", URL: feed,
+				Cadence: envDuration("TRENDINARY_CUSTOM_RSS_CADENCE", 30*time.Minute),
+			})
 		}
 	}
+
 	if os.Getenv("TRENDINARY_WIKIPEDIA_DISABLED") != "1" {
-		out = append(out, wikipedia.New(nil, envInt("TRENDINARY_WIKIPEDIA_LIMIT", 40)))
+		add(wikipedia.New(nil, envInt("TRENDINARY_WIKIPEDIA_LIMIT", 40)), scanner.SourceMetadata{
+			ID: "wikipedia", Name: "Wikipedia pageviews", Kind: "api", Policy: "official-api",
+			URL: "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/", TermsURL: "https://wikimedia.org/api/rest_v1/",
+			Cadence: 6 * time.Hour, StartImmediately: true,
+		})
 	}
+
+	if os.Getenv("TRENDINARY_GDELT_DISABLED") != "1" {
+		add(gdelt.New(nil, os.Getenv("TRENDINARY_GDELT_QUERY"), envInt("TRENDINARY_GDELT_LIMIT", 250)), scanner.SourceMetadata{
+			ID: "gdelt", Name: "GDELT", Kind: "api", Policy: "official-api",
+			URL: "https://api.gdeltproject.org/api/v2/doc/doc", TermsURL: "https://www.gdeltproject.org/",
+			Cadence: 10 * time.Minute, StartImmediately: true,
+		})
+	}
+
 	if os.Getenv("TRENDINARY_YOUTUBE_DISABLED") != "1" {
 		if key := strings.TrimSpace(os.Getenv("TRENDINARY_YOUTUBE_API_KEY")); key != "" {
-			out = append(out, youtube.New(nil, key, envString("TRENDINARY_YOUTUBE_REGION", "US"), envInt("TRENDINARY_YOUTUBE_LIMIT", 25)))
+			add(youtube.New(nil, key, envString("TRENDINARY_YOUTUBE_REGION", "US"), envInt("TRENDINARY_YOUTUBE_LIMIT", 25)), scanner.SourceMetadata{
+				ID: "youtube-api", Name: "YouTube Data API", Kind: "api", Policy: "official-api",
+				URL: "https://www.googleapis.com/youtube/v3/", TermsURL: "https://developers.google.com/youtube/v3/",
+				Cadence: time.Hour,
+			})
+		} else {
+			slog.Info("YouTube discovery disabled because TRENDINARY_YOUTUBE_API_KEY is not configured")
 		}
 	}
-	if os.Getenv("TRENDINARY_GDELT_DISABLED") != "1" {
-		out = append(out, gdelt.New(nil, os.Getenv("TRENDINARY_GDELT_QUERY"), envInt("TRENDINARY_GDELT_LIMIT", 250)))
-	}
+
 	if os.Getenv("TRENDINARY_NEWSDATA_DISABLED") != "1" {
 		if key := strings.TrimSpace(os.Getenv("TRENDINARY_NEWSDATA_API_KEY")); key != "" {
-			out = append(out, newsdata.New(
-				nil,
-				historical,
-				historical,
-				key,
-				envInt("TRENDINARY_NEWSDATA_DAILY_CALLS", 200),
-				os.Getenv("TRENDINARY_NEWSDATA_CATEGORY"),
-			))
+			add(newsdata.New(nil, historical, historical, key, envInt("TRENDINARY_NEWSDATA_DAILY_CALLS", 200), os.Getenv("TRENDINARY_NEWSDATA_CATEGORY")), scanner.SourceMetadata{
+				ID: "newsdata-api", Name: "NewsData", Kind: "api", Policy: "official-api",
+				URL: "https://newsdata.io/api/1/latest", TermsURL: "https://newsdata.io/documentation", Cadence: 2 * time.Hour,
+			})
 		} else {
 			slog.Info("NewsData discovery disabled because TRENDINARY_NEWSDATA_API_KEY is not configured")
 		}
 	}
+
+	inactive := make([]runtimeinfo.SourceSnapshot, 0)
+	for _, entry := range sourceregistry.Default() {
+		if entry.Enabled || configured[entry.ID] {
+			continue
+		}
+		inactive = append(inactive, runtimeinfo.SourceSnapshot{
+			ID: entry.ID, Name: entry.Name, Kind: entry.Kind, Policy: string(entry.Policy), URL: entry.URL,
+			TermsURL: entry.TermsURL, Enabled: false, Cadence: entry.Cadence,
+		})
+	}
+	return out, inactive
+}
+
+func runtimeSourceSnapshots(sources []scanner.DiscoverySource, inactive []runtimeinfo.SourceSnapshot, scanInterval time.Duration, jetstreamEnabled, scannerEnabled bool) []runtimeinfo.SourceSnapshot {
+	out := make([]runtimeinfo.SourceSnapshot, 0, len(sources)+len(inactive)+2)
+	out = append(out,
+		runtimeinfo.SourceSnapshot{ID: "hacker-news", Name: "Hacker News", Kind: "api", Policy: "official-api", URL: "https://hacker-news.firebaseio.com/", Enabled: scannerEnabled, Cadence: scanInterval},
+		runtimeinfo.SourceSnapshot{ID: "bluesky-jetstream", Name: "Bluesky Jetstream", Kind: "stream", Policy: "public-stream", URL: envString("TRENDINARY_JETSTREAM_HOST", "https://jetstream.us-east.bsky.network"), Enabled: jetstreamEnabled},
+	)
+	for _, value := range scanner.SourceStatuses(sources) {
+		out = append(out, runtimeinfo.SourceSnapshot{
+			ID: value.ID, Name: value.Name, Kind: value.Kind, Policy: value.Policy, URL: value.URL, TermsURL: value.TermsURL,
+			Enabled: value.Enabled, Cadence: value.Cadence, LastAttemptAt: value.LastAttemptAt, LastSuccessAt: value.LastSuccessAt,
+			NextRunAt: value.NextRunAt, LastError: value.LastError, Failures: value.Failures, CachedSignals: value.CachedSignals,
+		})
+	}
+	out = append(out, inactive...)
 	return out
 }
 
@@ -238,12 +303,13 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status
 	}
 }
 
-func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, sources []scanner.DiscoverySource, interval time.Duration, status *runtimeinfo.Status) {
+func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, sources []scanner.DiscoverySource, inactive []runtimeinfo.SourceSnapshot, interval time.Duration, status *runtimeinfo.Status, jetstreamEnabled, scannerEnabled bool) {
 	run := func() {
 		status.ScanStarted(time.Now().UTC())
 		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
 		result, err := scan.RunWithSourcesV2(runCtx, streamWindow, sources)
+		status.SetSources(runtimeSourceSnapshots(sources, inactive, interval, jetstreamEnabled, scannerEnabled))
 		if err != nil {
 			status.ScanFailed(err)
 			slog.Warn("trend scan failed", "error", err)
@@ -288,15 +354,16 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
-func envDuration(name string, fallback time.Duration) time.Duration {
+func envDuration(name, fallback string) time.Duration {
 	value := os.Getenv(name)
 	if value == "" {
-		return fallback
+		value = fallback
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed < 15*time.Second {
-		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallback)
-		return fallback
+		fallbackDuration, _ := time.ParseDuration(fallback)
+		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallbackDuration)
+		return fallbackDuration
 	}
 	return parsed
 }
