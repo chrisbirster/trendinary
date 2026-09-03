@@ -25,7 +25,7 @@ func (f *scheduledFake) Discover(context.Context) ([]model.Signal, error) {
 
 func TestScheduledSourceRespectsCadenceAndCaches(t *testing.T) {
 	fake := &scheduledFake{}
-	source := NewScheduledSource(fake, SourceMetadata{ID: "fake", Name: "Fake", Kind: "api", Cadence: time.Hour})
+	source := NewScheduledSource(fake, SourceMetadata{ID: "fake", Name: "Fake", Kind: "api", Cadence: time.Hour, StartImmediately: true})
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	source.now = func() time.Time { return now }
 
@@ -47,7 +47,7 @@ func TestScheduledSourceRespectsCadenceAndCaches(t *testing.T) {
 
 func TestScheduledSourceBacksOffAndKeepsLastGoodBatch(t *testing.T) {
 	fake := &scheduledFake{}
-	source := NewScheduledSource(fake, SourceMetadata{ID: "fake", Name: "Fake", Kind: "api", Cadence: 10 * time.Minute})
+	source := NewScheduledSource(fake, SourceMetadata{ID: "fake", Name: "Fake", Kind: "api", Cadence: 10 * time.Minute, StartImmediately: true})
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	source.now = func() time.Time { return now }
 	if _, err := source.Discover(context.Background()); err != nil {
@@ -63,5 +63,14 @@ func TestScheduledSourceBacksOffAndKeepsLastGoodBatch(t *testing.T) {
 	status := source.SourceStatus()
 	if status.Failures != 1 || status.LastError == "" || !status.NextRunAt.After(now) {
 		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestScheduledSourceStaggersInitialPoll(t *testing.T) {
+	fake := &scheduledFake{}
+	source := NewScheduledSource(fake, SourceMetadata{ID: "rss:wired", Name: "WIRED", Kind: "rss", Cadence: 30 * time.Minute})
+	status := source.SourceStatus()
+	if status.NextRunAt.IsZero() || !status.NextRunAt.After(time.Now().UTC().Add(-time.Second)) {
+		t.Fatalf("initial next run not staggered: %+v", status)
 	}
 }
