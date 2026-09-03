@@ -354,16 +354,15 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
-func envDuration(name, fallback string) time.Duration {
+func envDuration(name string, fallback time.Duration) time.Duration {
 	value := os.Getenv(name)
 	if value == "" {
-		value = fallback
+		return fallback
 	}
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed < 15*time.Second {
-		fallbackDuration, _ := time.ParseDuration(fallback)
-		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallbackDuration)
-		return fallbackDuration
+		slog.Warn("invalid duration environment variable", "name", name, "value", value, "fallback", fallback)
+		return fallback
 	}
 	return parsed
 }
