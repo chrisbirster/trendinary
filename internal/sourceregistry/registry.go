@@ -54,6 +54,16 @@ func Default() []Entry {
 		{ID: "ars-science", Name: "Ars Technica · Science", Kind: "rss", URL: "https://feeds.arstechnica.com/arstechnica/science", TermsURL: "https://arstechnica.com/rss-feeds/", Policy: PolicyOfficialRSS, Cadence: 30 * time.Minute, Enabled: true},
 		{ID: "ars-cars", Name: "Ars Technica · Cars", Kind: "rss", URL: "https://feeds.arstechnica.com/arstechnica/cars", TermsURL: "https://arstechnica.com/rss-feeds/", Policy: PolicyOfficialRSS, Cadence: time.Hour, Enabled: true},
 
+		// ABC News explicitly publishes headline feeds for news aggregators.
+		{ID: "abc-top", Name: "ABC News · Top Stories", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/topstories", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 15 * time.Minute, Enabled: true},
+		{ID: "abc-us", Name: "ABC News · U.S.", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/usheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
+		{ID: "abc-international", Name: "ABC News · International", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/internationalheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
+		{ID: "abc-politics", Name: "ABC News · Politics", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/politicsheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
+		{ID: "abc-business", Name: "ABC News · Business", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/moneyheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 30 * time.Minute, Enabled: true},
+		{ID: "abc-technology", Name: "ABC News · Technology", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/technologyheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 30 * time.Minute, Enabled: true},
+		{ID: "abc-health", Name: "ABC News · Health", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/healthheadlines", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 30 * time.Minute, Enabled: true},
+		{ID: "abc-most-read", Name: "ABC News · Most Read", Kind: "rss", URL: "https://feeds.abcnews.com/abcnews/mostreadstories", TermsURL: "https://abcnews.go.com/Site/page/rss-feeds-3520115", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
+
 		// Publisher and public-sector feeds with explicit syndication endpoints.
 		{ID: "techcrunch", Name: "TechCrunch", Kind: "rss", URL: "https://techcrunch.com/feed/", TermsURL: "https://techcrunch.com/rss-terms-of-use/", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
 		{ID: "nist-news", Name: "NIST · News", Kind: "rss", URL: "https://www.nist.gov/news-events/news/rss.xml", TermsURL: "https://www.nist.gov/coo/nist-rss-feeds", Policy: PolicyOfficialRSS, Cadence: time.Hour, Enabled: true},
