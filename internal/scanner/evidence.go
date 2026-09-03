@@ -21,5 +21,6 @@ func relatedEvidence(current, historical []model.Signal, threshold float64) []mo
 				break
 			}
 		}
+	}
 	return deduplicateSignals(out)
 }
