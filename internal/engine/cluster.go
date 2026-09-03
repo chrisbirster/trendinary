@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"net/url"
 	"sort"
 	"strings"
 	"unicode"
@@ -35,10 +34,9 @@ var phraseAliases = []struct {
 	{canonical: "github", variants: []string{"git hub", "github"}},
 }
 
-// ClusterSignals is a transparent lexical baseline. Entity spelling aliases,
-// hashtags, and linked domains are canonicalized before Jaccard comparison.
-// The implementation remains intentionally inspectable while Trendinary builds
-// enough labeled history to justify a semantic candidate-generation layer.
+// ClusterSignals is the transparent lexical baseline. Only semantic event text
+// participates in similarity. Publisher domains and adapter metadata are
+// provenance and must not make unrelated stories look similar.
 func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.45
@@ -72,7 +70,6 @@ func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 				union(i, j)
 			}
 		}
-	}
 
 	groups := map[int][]model.Signal{}
 	for i, signal := range input {
@@ -93,20 +90,24 @@ func ClusterSignals(input []model.Signal, threshold float64) []Cluster {
 	return clusters
 }
 
-// SignalTerms returns canonical, meaningful terms used by clustering and stable
-// trend identity. Keeping this exported means identity resolution and cluster
-// similarity cannot silently drift into two incompatible definitions.
-func SignalTerms(signal model.Signal) map[string]struct{} {
-	text := canonicalize(signal.Title + " " + signal.Text)
-	set := tokenSet(text)
-	if parsed, err := url.Parse(signal.URL); err == nil && parsed.Hostname() != "" {
-		host := strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
-		parts := strings.Split(host, ".")
-		if len(parts) > 0 && parts[0] != "" {
-			set[canonicalToken(parts[0])] = struct{}{}
-		}
+// ClusteringText returns the event-bearing text for a signal. Adapters can set
+// ClusterText when Text contains descriptive boilerplate that is useful for the
+// UI but dangerous for similarity. Headlines are otherwise preferred; social
+// observations naturally fall back to their body text.
+func ClusteringText(signal model.Signal) string {
+	if value := strings.TrimSpace(signal.ClusterText); value != "" {
+		return value
 	}
-	return set
+	if value := strings.TrimSpace(signal.Title); value != "" {
+		return value
+	}
+	return strings.TrimSpace(signal.Text)
+}
+
+// SignalTerms returns canonical, meaningful event terms used by clustering and
+// stable trend identity. Source hostnames are intentionally excluded.
+func SignalTerms(signal model.Signal) map[string]struct{} {
+	return tokenSet(canonicalize(ClusteringText(signal)))
 }
 
 // CanonicalTerms returns the most representative canonical terms across a set
@@ -210,6 +211,23 @@ func similarity(a, b map[string]struct{}) float64 {
 		union[token] = struct{}{}
 	}
 	return float64(intersection) / float64(len(union))
+}
+
+func overlapCoefficient(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for token := range a {
+		if _, ok := b[token]; ok {
+			intersection++
+		}
+	}
+	denominator := len(a)
+	if len(b) < denominator {
+		denominator = len(b)
+	}
+	return float64(intersection) / float64(denominator)
 }
 
 func clusterKey(signals []model.Signal) string {
