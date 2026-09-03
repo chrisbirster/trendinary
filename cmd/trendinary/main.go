@@ -71,6 +71,8 @@ func main() {
 		envInt("TRENDINARY_RECENT_SIGNAL_LIMIT", 50_000),
 		envDuration("TRENDINARY_RECENT_SIGNAL_TTL", 30*time.Minute),
 	)
+	discoverySources, inactiveSources := buildDiscoverySources(historical)
+	sourceUniverse := max(8, len(discoverySources)+2)
 	blueskyClient := bluesky.NewClient(nil)
 	scan := scanner.New(
 		hackernews.NewClient(nil),
@@ -82,11 +84,10 @@ func main() {
 			EnrichClusters:      envInt("TRENDINARY_ENRICH_CLUSTERS", 8),
 			BlueskyLimit:        envInt("TRENDINARY_BLUESKY_LIMIT", 20),
 			PublishedTrendLimit: envInt("TRENDINARY_TREND_LIMIT", 20),
-			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", 8),
+			SourceUniverse:      envInt("TRENDINARY_SOURCE_UNIVERSE", sourceUniverse),
 		},
 	)
 
-	discoverySources, inactiveSources := buildDiscoverySources(historical)
 	jetstreamEnabled := os.Getenv("TRENDINARY_JETSTREAM_DISABLED") != "1"
 	scannerEnabled := os.Getenv("TRENDINARY_SCANNER_DISABLED") != "1"
 	scanInterval := envDuration("TRENDINARY_SCAN_INTERVAL", 2*time.Minute)
