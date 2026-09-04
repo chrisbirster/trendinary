@@ -4,6 +4,32 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-03
+
+### Added
+
+- Curated public source registry with policy metadata and source-specific polling cadences for dozens of official RSS/API sources, including WIRED, Ars Technica, TechCrunch, ABC News, NIST, NASA/JPL, CISA, AWS, GitHub, Cloudflare, Mozilla, BleepingComputer, Krebs on Security, and developer ecosystems.
+- Per-source scheduling with deterministic jitter, exponential backoff, cached last-good evidence, ETag/Last-Modified conditional RSS requests, and runtime source-health status.
+- Unified private `/admin/sources` operations dashboard showing public trend sources alongside private editorial discovery sources, including cadence, health, errors, last success, next run, and cached signal counts.
+- Rolling 24-hour persisted evidence reload for stable trends so source breadth, explanation evidence, and propagation can retain cross-scan corroboration.
+- Durable discovery-channel provenance stored independently from publisher identity, allowing a WIRED article discovered through Hacker News, RSS, or GDELT to remain WIRED evidence while retaining how Trendinary found it.
+- Regression coverage for v0.3.0 database upgrades, concurrent rolling-deploy schema migration, HN-to-publisher provenance, Wikipedia over-clustering, and differently-worded cross-publisher event merging.
+
+### Changed
+
+- Event clustering now uses explicit clustering text, headline/entity overlap, and publication proximity while excluding publisher domains and descriptive boilerplate from semantic similarity.
+- Source breadth now counts rolling distinct publishers rather than only the current scanner pass; the configured source-universe value remains a corroboration saturation target rather than the number of feed adapters.
+- Hacker News and other aggregators now separate discovery channel from original publisher where an outbound article URL exists.
+- The scanner continues using cached last-good source evidence when a scheduled upstream refresh fails while still surfacing the upstream warning.
+- Wikipedia pageview polling is reduced to a source-appropriate cadence instead of refetching the same daily ranking every global scan.
+
+### Fixed
+
+- Unrelated Wikipedia top pages can no longer collapse into a single high-attention trend because they share boilerplate pageview text.
+- Differently-worded reports of the same event from independent publishers are substantially more likely to resolve to one stable trend.
+- Public trend detail no longer reports source breadth solely from one in-memory scan when durable corroborating evidence already exists.
+- Quality feedback latest-label selection is deterministic when timestamps tie.
+
 ## [0.3.0] - 2026-09-02
 
 ### Added
