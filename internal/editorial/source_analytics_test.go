@@ -20,6 +20,7 @@ CREATE TABLE signals (
 CREATE TABLE trend_signal_memberships (
  trend_key TEXT NOT NULL,
  signal_id TEXT NOT NULL,
+ first_observed_at TEXT NOT NULL DEFAULT '',
  observed_at TEXT NOT NULL,
  PRIMARY KEY (trend_key, signal_id)
 );
@@ -33,18 +34,20 @@ CREATE TABLE trend_snapshots (
 	base := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
 	values := []struct {
 		id, name, domain, channel, trend string
-		at                              time.Time
+		firstAt                         time.Time
+		lastAt                          time.Time
 	}{
-		{"wired-1", "WIRED", "wired.com", "hacker-news", "audacity", base},
-		{"ars-1", "Ars Technica", "arstechnica.com", "rss", "audacity", base.Add(10 * time.Minute)},
-		{"wired-2", "WIRED", "wired.com", "rss", "other", base.Add(20 * time.Minute)},
+		{"wired-1", "WIRED", "wired.com", "hacker-news", "audacity", base, base.Add(45 * time.Minute)},
+		{"ars-1", "Ars Technica", "arstechnica.com", "rss", "audacity", base.Add(10 * time.Minute), base.Add(40 * time.Minute)},
+		{"wired-2", "WIRED", "wired.com", "rss", "other", base.Add(20 * time.Minute), base.Add(20 * time.Minute)},
 	}
 	for _, value := range values {
-		at := value.at.Format(time.RFC3339Nano)
-		if _, err := store.db.ExecContext(ctx, `INSERT INTO signals (id, source_name, source_domain, discovery_channel, observed_at) VALUES (?, ?, ?, ?, ?)`, value.id, value.name, value.domain, value.channel, at); err != nil {
+		lastAt := value.lastAt.Format(time.RFC3339Nano)
+		firstAt := value.firstAt.Format(time.RFC3339Nano)
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO signals (id, source_name, source_domain, discovery_channel, observed_at) VALUES (?, ?, ?, ?, ?)`, value.id, value.name, value.domain, value.channel, lastAt); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.db.ExecContext(ctx, `INSERT INTO trend_signal_memberships (trend_key, signal_id, observed_at) VALUES (?, ?, ?)`, value.trend, value.id, at); err != nil {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO trend_signal_memberships (trend_key, signal_id, first_observed_at, observed_at) VALUES (?, ?, ?, ?)`, value.trend, value.id, firstAt, lastAt); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,6 +75,8 @@ CREATE TABLE trend_snapshots (
 	if hn.Signals != 1 || hn.Trends != 1 || hn.FirstHits != 1 {
 		t.Fatalf("HN contribution = %+v", hn)
 	}
+	// wired-1 was refreshed at +45m, but its immutable first membership is the
+	// origin. Lead time must therefore stay 60m rather than collapsing to 15m.
 	if wired.AverageLeadToBreakingMinutes != 60 {
 		t.Fatalf("wired lead = %f, want 60", wired.AverageLeadToBreakingMinutes)
 	}
