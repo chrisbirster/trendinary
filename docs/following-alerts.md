@@ -25,6 +25,8 @@ Alerts are edge-triggered from baseline changes and also use fingerprints to sup
 
 While Trendinary is open, the Following monitor checks once per minute and immediately checks again when a hidden tab becomes visible. The user can also choose **Check now**.
 
+A monitor pass fetches the live leaderboard once and reuses those results across every followed trend. It falls back to an individual trend-detail request only for a followed trend that is no longer present in the leaderboard, avoiding one network request per follow during normal operation.
+
 The in-app alert inbox is the durable record for this version. If the user explicitly grants the browser Notification permission, Trendinary may show a browser notification when the page is open but hidden.
 
 v0.4.0 does **not** claim closed-browser push delivery. Reliable closed-browser delivery requires a Web Push/service-worker subscription or another delivery channel and should be implemented as a separate capability rather than implied by foreground polling.
