@@ -103,7 +103,7 @@ func (s *Source) Discover(ctx context.Context) ([]model.Signal, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Trendinary/0.2 (+https://trendinary.com; public-discovery)")
+	req.Header.Set("User-Agent", "Trendinary/0.3.1 (+https://trendinary.com; public-discovery)")
 
 	res, err := s.client.Do(req)
 	if err != nil {
@@ -142,11 +142,13 @@ func (s *Source) Discover(ctx context.Context) ([]model.Signal, error) {
 		}
 		sum := sha256.Sum256([]byte(link))
 		values = append(values, model.Signal{
-			ID:          "gdelt:" + hex.EncodeToString(sum[:8]),
-			Source:      model.Source{Name: name, Domain: domain, URL: link},
-			Title:       title,
-			URL:         link,
-			PublishedAt: parseSeenDate(item.SeenDate),
+			ID:               "gdelt:" + hex.EncodeToString(sum[:8]),
+			Source:           model.Source{Name: name, Domain: domain, URL: link},
+			DiscoveryChannel: "gdelt",
+			Title:            title,
+			ClusterText:      title,
+			URL:              link,
+			PublishedAt:      parseSeenDate(item.SeenDate),
 		})
 	}
 

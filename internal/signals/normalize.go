@@ -2,6 +2,7 @@ package signals
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -27,13 +28,15 @@ func HackerNews(items []hackernews.Item) []model.Signal {
 			published = time.Unix(item.Time, 0).UTC().Format(time.RFC3339)
 		}
 		out = append(out, model.Signal{
-			ID:          fmt.Sprintf("hn:%d", item.ID),
-			Source:      hackerNewsSource,
-			Title:       item.Title,
-			URL:         link,
-			Author:      item.By,
-			AuthorID:    item.By,
-			PublishedAt: published,
+			ID:               fmt.Sprintf("hn:%d", item.ID),
+			Source:           hackerNewsPublisher(item.URL, link),
+			DiscoveryChannel: "hacker-news",
+			Title:            item.Title,
+			ClusterText:      item.Title,
+			URL:              link,
+			Author:           item.By,
+			AuthorID:         item.By,
+			PublishedAt:      published,
 			Engagement: model.Engagement{
 				Score:   item.Score,
 				Replies: item.Descendants,
@@ -41,6 +44,18 @@ func HackerNews(items []hackernews.Item) []model.Signal {
 		})
 	}
 	return out
+}
+
+func hackerNewsPublisher(originalURL, link string) model.Source {
+	if strings.TrimSpace(originalURL) == "" {
+		return hackerNewsSource
+	}
+	parsed, err := url.Parse(originalURL)
+	if err != nil || parsed.Hostname() == "" {
+		return hackerNewsSource
+	}
+	domain := strings.ToLower(strings.TrimPrefix(parsed.Hostname(), "www."))
+	return model.Source{Name: domain, Domain: domain, URL: link}
 }
 
 func Bluesky(posts []bluesky.Post) []model.Signal {
@@ -64,14 +79,16 @@ func Bluesky(posts []bluesky.Post) []model.Signal {
 			author = post.Author.DID
 		}
 		out = append(out, model.Signal{
-			ID:          "bsky:" + post.URI,
-			Source:      blueskySource,
-			Text:        post.Record.Text,
-			URL:         link,
-			Author:      author,
-			AuthorID:    post.Author.DID,
-			Actor:       actor,
-			PublishedAt: post.Record.CreatedAt,
+			ID:               "bsky:" + post.URI,
+			Source:           blueskySource,
+			DiscoveryChannel: "bluesky",
+			Text:             post.Record.Text,
+			ClusterText:      post.Record.Text,
+			URL:              link,
+			Author:           author,
+			AuthorID:         post.Author.DID,
+			Actor:            actor,
+			PublishedAt:      post.Record.CreatedAt,
 			Engagement: model.Engagement{
 				Replies: post.ReplyCount,
 				Likes:   post.LikeCount,

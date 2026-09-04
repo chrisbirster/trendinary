@@ -29,15 +29,34 @@ type ScannerSnapshot struct {
 	Warnings      int       `json:"warnings"`
 }
 
+type SourceSnapshot struct {
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Kind          string        `json:"kind"`
+	Policy        string        `json:"policy,omitempty"`
+	URL           string        `json:"url,omitempty"`
+	TermsURL      string        `json:"terms_url,omitempty"`
+	Enabled       bool          `json:"enabled"`
+	Cadence       time.Duration `json:"cadence"`
+	LastAttemptAt time.Time     `json:"last_attempt_at,omitempty"`
+	LastSuccessAt time.Time     `json:"last_success_at,omitempty"`
+	NextRunAt     time.Time     `json:"next_run_at,omitempty"`
+	LastError     string        `json:"last_error,omitempty"`
+	Failures      int           `json:"failures"`
+	CachedSignals int           `json:"cached_signals"`
+}
+
 type Snapshot struct {
-	Stream  StreamSnapshot  `json:"stream"`
-	Scanner ScannerSnapshot `json:"scanner"`
+	Stream  StreamSnapshot   `json:"stream"`
+	Scanner ScannerSnapshot  `json:"scanner"`
+	Sources []SourceSnapshot `json:"sources,omitempty"`
 }
 
 type Status struct {
 	mu      sync.RWMutex
 	stream  StreamSnapshot
 	scanner ScannerSnapshot
+	sources []SourceSnapshot
 }
 
 func New(streamEnabled, scannerEnabled bool) *Status {
@@ -48,35 +67,18 @@ func New(streamEnabled, scannerEnabled bool) *Status {
 }
 
 func (s *Status) StreamConnecting(host string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.stream.Host = host
-	s.stream.Connected = false
-	s.stream.RetryIn = 0
-	s.mu.Unlock()
+	if s == nil { return }
+	s.mu.Lock(); s.stream.Host = host; s.stream.Connected = false; s.stream.RetryIn = 0; s.mu.Unlock()
 }
 
 func (s *Status) StreamConnected(host string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.stream.Host = host
-	s.stream.Connected = true
-	s.stream.LastError = ""
-	s.stream.RetryIn = 0
-	s.mu.Unlock()
+	if s == nil { return }
+	s.mu.Lock(); s.stream.Host = host; s.stream.Connected = true; s.stream.LastError = ""; s.stream.RetryIn = 0; s.mu.Unlock()
 }
 
 func (s *Status) StreamBatch(cursor uint64, batchSize int, observedAt time.Time) {
-	if s == nil {
-		return
-	}
-	if observedAt.IsZero() {
-		observedAt = time.Now().UTC()
-	}
+	if s == nil { return }
+	if observedAt.IsZero() { observedAt = time.Now().UTC() }
 	s.mu.Lock()
 	s.stream.Connected = true
 	s.stream.LastEventAt = observedAt.UTC()
@@ -86,52 +88,31 @@ func (s *Status) StreamBatch(cursor uint64, batchSize int, observedAt time.Time)
 }
 
 func (s *Status) StreamDisconnected(err error, retryIn time.Duration) {
-	if s == nil {
-		return
-	}
+	if s == nil { return }
 	s.mu.Lock()
 	s.stream.Connected = false
 	s.stream.RetryIn = retryIn
 	s.stream.Reconnects++
-	if err != nil {
-		s.stream.LastError = err.Error()
-	}
+	if err != nil { s.stream.LastError = err.Error() }
 	s.mu.Unlock()
 }
 
 func (s *Status) StreamFatal(err error) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.stream.Connected = false
-	s.stream.RetryIn = 0
-	if err != nil {
-		s.stream.LastError = err.Error()
-	}
+	if s == nil { return }
+	s.mu.Lock(); s.stream.Connected = false; s.stream.RetryIn = 0
+	if err != nil { s.stream.LastError = err.Error() }
 	s.mu.Unlock()
 }
 
 func (s *Status) ScanStarted(at time.Time) {
-	if s == nil {
-		return
-	}
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
-	s.mu.Lock()
-	s.scanner.Running = true
-	s.scanner.LastStartedAt = at.UTC()
-	s.mu.Unlock()
+	if s == nil { return }
+	if at.IsZero() { at = time.Now().UTC() }
+	s.mu.Lock(); s.scanner.Running = true; s.scanner.LastStartedAt = at.UTC(); s.mu.Unlock()
 }
 
 func (s *Status) ScanSucceeded(at time.Time, signals, clusters, trends, warnings int) {
-	if s == nil {
-		return
-	}
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
+	if s == nil { return }
+	if at.IsZero() { at = time.Now().UTC() }
 	s.mu.Lock()
 	s.scanner.Running = false
 	s.scanner.LastSuccessAt = at.UTC()
@@ -144,22 +125,21 @@ func (s *Status) ScanSucceeded(at time.Time, signals, clusters, trends, warnings
 }
 
 func (s *Status) ScanFailed(err error) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.scanner.Running = false
-	if err != nil {
-		s.scanner.LastError = err.Error()
-	}
+	if s == nil { return }
+	s.mu.Lock(); s.scanner.Running = false
+	if err != nil { s.scanner.LastError = err.Error() }
 	s.mu.Unlock()
 }
 
+func (s *Status) SetSources(values []SourceSnapshot) {
+	if s == nil { return }
+	copyValues := append([]SourceSnapshot(nil), values...)
+	s.mu.Lock(); s.sources = copyValues; s.mu.Unlock()
+}
+
 func (s *Status) Snapshot() Snapshot {
-	if s == nil {
-		return Snapshot{}
-	}
+	if s == nil { return Snapshot{} }
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return Snapshot{Stream: s.stream, Scanner: s.scanner}
+	return Snapshot{Stream: s.stream, Scanner: s.scanner, Sources: append([]SourceSnapshot(nil), s.sources...)}
 }

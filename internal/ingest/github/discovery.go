@@ -94,7 +94,7 @@ func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "trendinary/0.1 (+https://trendinary.com)")
+	req.Header.Set("User-Agent", "trendinary/0.3.1 (+https://trendinary.com)")
 	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
 	}
@@ -117,14 +117,16 @@ func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 			continue
 		}
 		values = append(values, model.Signal{
-			ID:          fmt.Sprintf("github:repo:%d", repo.ID),
-			Source:      githubSource,
-			Title:       repo.FullName,
-			Text:        repo.Description,
-			URL:         repo.HTMLURL,
-			Author:      repo.Owner.Login,
-			AuthorID:    repo.Owner.Login,
-			PublishedAt: repo.CreatedAt,
+			ID:               fmt.Sprintf("github:repo:%d", repo.ID),
+			Source:           githubSource,
+			DiscoveryChannel: "github",
+			Title:            repo.FullName,
+			ClusterText:      repo.FullName + " " + repo.Description,
+			Text:             repo.Description,
+			URL:              repo.HTMLURL,
+			Author:           repo.Owner.Login,
+			AuthorID:         repo.Owner.Login,
+			PublishedAt:      repo.CreatedAt,
 			Engagement: model.Engagement{
 				Score:   repo.StargazersCount,
 				Replies: repo.OpenIssuesCount,

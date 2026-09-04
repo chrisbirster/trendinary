@@ -33,13 +33,13 @@ type Snapshot struct {
 }
 
 type Baseline struct {
-	TrendKey        string    `json:"trend_key"`
-	Observations    int       `json:"observations"`
-	AverageAttention float64  `json:"average_attention"`
-	MaximumAttention float64  `json:"maximum_attention"`
-	FirstSeen       time.Time `json:"first_seen,omitempty"`
-	LastSeen        time.Time `json:"last_seen,omitempty"`
-	Latest          *Snapshot `json:"latest,omitempty"`
+	TrendKey         string    `json:"trend_key"`
+	Observations     int       `json:"observations"`
+	AverageAttention float64   `json:"average_attention"`
+	MaximumAttention float64   `json:"maximum_attention"`
+	FirstSeen        time.Time `json:"first_seen,omitempty"`
+	LastSeen         time.Time `json:"last_seen,omitempty"`
+	Latest           *Snapshot `json:"latest,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -88,14 +88,16 @@ func (s *Store) configure(ctx context.Context) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	// This schema is still pre-production. Raw metrics are stored alongside the
-	// normalized score inputs so future calibration can be replayed without
-	// circularly deriving baselines from already-normalized values.
+	// Raw metrics are stored alongside normalized score inputs so future
+	// calibration can be replayed without deriving baselines from normalized
+	// values. Discovery channel is stored separately from publisher identity so
+	// a WIRED article discovered through HN/RSS/GDELT remains WIRED evidence.
 	const schema = `
 CREATE TABLE IF NOT EXISTS signals (
   id TEXT PRIMARY KEY,
   source_name TEXT NOT NULL,
   source_domain TEXT,
+  discovery_channel TEXT NOT NULL DEFAULT '',
   title TEXT,
   body TEXT,
   url TEXT,
@@ -136,6 +138,51 @@ CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_time ON trend_snapshots(tre
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("sqlite migrate: %w", err)
 	}
+	if err := s.ensureSignalsDiscoveryChannel(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) hasSignalsDiscoveryChannel(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(signals)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect signals schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan signals schema: %w", err)
+		}
+		if name == "discovery_channel" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect signals schema rows: %w", err)
+	}
+	return false, nil
+}
+
+func (s *Store) ensureSignalsDiscoveryChannel(ctx context.Context) error {
+	found, err := s.hasSignalsDiscoveryChannel(ctx)
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE signals ADD COLUMN discovery_channel TEXT NOT NULL DEFAULT ''`); err != nil {
+		// A rolling deploy can start two new machines against the same Turso DB.
+		// If another process won the ALTER race, accept the now-correct schema.
+		if foundAfterRace, inspectErr := s.hasSignalsDiscoveryChannel(ctx); inspectErr == nil && foundAfterRace {
+			return nil
+		}
+		return fmt.Errorf("add signals discovery channel: %w", err)
+	}
 	return nil
 }
 
@@ -151,12 +198,13 @@ func (s *Store) RecordSignals(ctx context.Context, values []model.Signal) error 
 
 	const query = `
 INSERT INTO signals (
-  id, source_name, source_domain, title, body, url, author, published_at,
+  id, source_name, source_domain, discovery_channel, title, body, url, author, published_at,
   observed_at, score, replies, likes, reposts, quotes
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   source_name=excluded.source_name,
   source_domain=excluded.source_domain,
+  discovery_channel=excluded.discovery_channel,
   title=excluded.title,
   body=excluded.body,
   url=excluded.url,
@@ -175,6 +223,7 @@ ON CONFLICT(id) DO UPDATE SET
 			signal.ID,
 			signal.Source.Name,
 			signal.Source.Domain,
+			signal.DiscoveryChannel,
 			signal.Title,
 			signal.Text,
 			signal.URL,

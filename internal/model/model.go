@@ -48,20 +48,24 @@ type Engagement struct {
 	Quotes  int `json:"quotes,omitempty"`
 }
 
-// Signal is Trendinary's source-independent observation shape. AuthorID is the
-// stable source-native identity (for example an AT Protocol DID) while Author
-// is the human-readable handle/name when one is known.
+// Signal is Trendinary's source-independent observation shape. Source is the
+// original publisher/community being observed, while DiscoveryChannel records
+// how Trendinary found it (for example rss, gdelt, hacker-news, or bluesky).
+// ClusterText is an internal semantic hint: adapters may keep descriptive
+// metadata in Text without allowing boilerplate to influence event clustering.
 type Signal struct {
-	ID          string        `json:"id"`
-	Source      Source        `json:"source"`
-	Title       string        `json:"title,omitempty"`
-	Text        string        `json:"text,omitempty"`
-	URL         string        `json:"url,omitempty"`
-	Author      string        `json:"author,omitempty"`
-	AuthorID    string        `json:"author_id,omitempty"`
-	Actor       *ActorProfile `json:"actor,omitempty"`
-	PublishedAt string        `json:"published_at,omitempty"`
-	Engagement  Engagement    `json:"engagement,omitempty"`
+	ID               string        `json:"id"`
+	Source           Source        `json:"source"`
+	DiscoveryChannel string        `json:"discovery_channel,omitempty"`
+	Title            string        `json:"title,omitempty"`
+	Text             string        `json:"text,omitempty"`
+	ClusterText      string        `json:"-"`
+	URL              string        `json:"url,omitempty"`
+	Author           string        `json:"author,omitempty"`
+	AuthorID         string        `json:"author_id,omitempty"`
+	Actor            *ActorProfile `json:"actor,omitempty"`
+	PublishedAt      string        `json:"published_at,omitempty"`
+	Engagement       Engagement    `json:"engagement,omitempty"`
 }
 
 type TimelineEvent struct {
@@ -102,12 +106,12 @@ type Evidence struct {
 }
 
 type Explanation struct {
-	Summary     string     `json:"summary"`
+	Summary      string     `json:"summary"`
 	WhatChanged string     `json:"what_changed"`
-	Lore        string     `json:"lore"`
-	Confidence  string     `json:"confidence"`
-	Mode        string     `json:"mode"`
-	Evidence    []Evidence `json:"evidence"`
+	Lore         string     `json:"lore"`
+	Confidence   string     `json:"confidence"`
+	Mode         string     `json:"mode"`
+	Evidence     []Evidence `json:"evidence"`
 }
 
 // TrendQuality exposes the normalized inputs that make an early signal useful.
@@ -124,18 +128,18 @@ type TrendQuality struct {
 }
 
 type Trend struct {
-	ID       string   `json:"id,omitempty"`
-	Slug     string   `json:"slug"`
-	Aliases  []string `json:"aliases,omitempty"`
-	Rank     int      `json:"rank"`
-	Name     string   `json:"name"`
-	Category string   `json:"category"`
-	Score    int      `json:"score"`
-	Change   string   `json:"change"`
-	Status   string   `json:"status"`
-	Reason   string   `json:"reason"`
-	Started  string   `json:"started"`
-	Vibe     string   `json:"vibe"`
+	ID       string       `json:"id,omitempty"`
+	Slug     string       `json:"slug"`
+	Aliases  []string     `json:"aliases,omitempty"`
+	Rank     int          `json:"rank"`
+	Name     string       `json:"name"`
+	Category string       `json:"category"`
+	Score    int          `json:"score"`
+	Change   string       `json:"change"`
+	Status   string       `json:"status"`
+	Reason   string       `json:"reason"`
+	Started  string       `json:"started"`
+	Vibe     string       `json:"vibe"`
 	Quality  TrendQuality `json:"quality"`
 
 	Sources     []Source         `json:"sources"`
