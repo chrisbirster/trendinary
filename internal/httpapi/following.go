@@ -210,7 +210,7 @@ func (s *Server) putFollowingPushSubscription(w http.ResponseWriter, r *http.Req
 	if !decodeFollowingJSON(w, r, &input) {
 		return
 	}
-	value, err := s.following.Store().PutPushSubscription(r.Context(), radarID, input)
+	value, err := s.following.Store().RebindPushSubscription(r.Context(), radarID, input)
 	if err != nil {
 		followingError(w, err)
 		return
