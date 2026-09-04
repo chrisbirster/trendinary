@@ -1,4 +1,4 @@
-import { fetchTrend, type Trend } from "./api";
+import { fetchTrend, fetchTrends, type Trend } from "./api";
 
 const STORAGE_KEY = "trendinary.following.v1";
 const MAX_ALERTS = 100;
@@ -35,7 +35,7 @@ export type FollowAlert = {
   read: boolean;
 };
 
-type FollowingState = {
+export type FollowingState = {
   version: 1;
   follows: FollowRecord[];
   alerts: FollowAlert[];
@@ -44,7 +44,11 @@ type FollowingState = {
 const emptyState = (): FollowingState => ({ version: 1, follows: [], alerts: [] });
 
 function hasStorage() {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+  try {
+    return typeof window !== "undefined" && "localStorage" in window;
+  } catch {
+    return false;
+  }
 }
 
 export function loadFollowingState(): FollowingState {
@@ -62,7 +66,12 @@ export function loadFollowingState(): FollowingState {
 
 function persist(state: FollowingState) {
   if (!hasStorage()) return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Private browsing/storage policy can disable persistence. The current
+    // in-memory UI remains usable instead of turning a storage denial into a crash.
+  }
 }
 
 function uniqueSourceCount(trend: Trend) {
@@ -226,18 +235,36 @@ export async function requestBrowserFollowingAlerts() {
   if (typeof Notification === "undefined") return "unsupported" as const;
   if (Notification.permission === "granted") return "granted" as const;
   if (Notification.permission === "denied") return "denied" as const;
-  return Notification.requestPermission();
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return "denied" as const;
+  }
 }
 
-export async function refreshFollowing(fetcher: (slug: string) => Promise<Trend> = fetchTrend) {
+// The live leaderboard is fetched once per monitor pass. Follows that have
+// fallen off the published leaderboard fall back to the trend-detail endpoint.
+// This keeps 20 follows from becoming 20 requests every minute while retaining
+// coverage for cooling/resurfacing topics that are no longer top-ranked.
+export async function refreshFollowing(
+  fetcher: (slug: string) => Promise<Trend> = fetchTrend,
+  listFetcher: () => Promise<Trend[]> = fetchTrends,
+) {
   const state = loadFollowingState();
   if (state.follows.length === 0) return state;
+
+  const liveBySlug = new Map<string, Trend>();
+  try {
+    for (const trend of await listFetcher()) liveBySlug.set(trend.slug, trend);
+  } catch {
+    // Individual detail lookups below remain a valid fallback.
+  }
 
   const knownFingerprints = new Set(state.alerts.map((alert) => alert.fingerprint));
   const newAlerts: FollowAlert[] = [];
   const nextFollows = await Promise.all(state.follows.map(async (follow) => {
     try {
-      const trend = await fetcher(follow.slug);
+      const trend = liveBySlug.get(follow.slug) ?? await fetcher(follow.slug);
       for (const alert of detectAlerts(follow, trend)) {
         if (knownFingerprints.has(alert.fingerprint)) continue;
         knownFingerprints.add(alert.fingerprint);
