@@ -10,8 +10,6 @@ self.addEventListener("push", (event) => {
     body: data.body || "A followed signal changed.",
     tag: data.tag || "trendinary-following",
     data: { url: data.url || "/following" },
-    icon: "/favicon.svg",
-    badge: "/favicon.svg",
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
