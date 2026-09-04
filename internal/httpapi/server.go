@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,6 +66,21 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 			option(server)
 		}
 	}
+	// Production main supplies both durable history and runtime status. That is
+	// the boundary where v0.5's anonymous server-backed radar becomes active.
+	// Most focused handler tests omit runtime status, so they do not leak a
+	// minute ticker merely by constructing a server with a temporary history DB.
+	if server.following == nil && server.history != nil && server.runtime != nil {
+		if radarStore, err := following.NewStore(server.history.DB()); err != nil {
+			slog.Error("configure following store", "error", err)
+		} else if push, err := following.NewPushSender(context.Background(), radarStore, nil); err != nil {
+			slog.Error("configure following Web Push", "error", err)
+		} else {
+			server.followingPush = push
+			server.following = following.NewService(radarStore, s, push)
+			go runFollowingWorker(server.following)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
@@ -92,6 +109,23 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	mux.HandleFunc("GET /api/v1/methodology/score", server.scoreMethodology)
 	mux.Handle("/", frontend)
 	return withHeaders(mux)
+}
+
+func runFollowingWorker(service *following.Service) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		result, err := service.Evaluate(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("following evaluation failed", "error", err)
+			continue
+		}
+		if result.Alerts > 0 {
+			slog.Info("following alerts generated", "radars", result.Radars, "follows", result.Follows, "matches", result.Matches, "alerts", result.Alerts, "push_attempts", result.PushAttempts)
+		}
+	}
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
