@@ -4,6 +4,28 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-04
+
+### Added
+
+- Device-local Following radar under `/following` with no account, email address, or server-side user profile required.
+- Follow baselines captured at follow time so already-popular trends do not generate fake alerts.
+- Edge-triggered alerts for lifecycle transitions, resurfacing, meaningful acceleration, and broader independent-source corroboration.
+- Durable device-local alert inbox with unread state, mark-read and clear controls, plus an explicit quiet-state when nothing material changed.
+- Optional browser notifications, shown only after explicit permission and while Trendinary is open in a hidden tab.
+- Live trend browse-and-follow controls plus query-parameter bootstrap for deep-linking a trend into Following.
+
+### Changed
+
+- Following monitor checks once per minute while the app is open and refreshes immediately when a hidden tab becomes visible.
+- Each monitor pass reuses one leaderboard request across all follows, falling back to trend-detail requests only for followed topics that have left the leaderboard.
+- v0.4.0 deliberately keeps follows device-local; cross-device sync and true closed-browser Web Push remain separate future capabilities rather than implied behavior.
+
+### Fixed
+
+- Following now falls back to session-memory state when browser storage is unavailable or rejects writes, instead of reloading stale persisted state.
+- Follow/Unfollow controls derive from reactive Solid state so their labels update immediately after user actions.
+
 ## [0.3.2] - 2026-09-03
 
 ### Added
