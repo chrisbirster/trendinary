@@ -37,11 +37,22 @@ func TestScheduledSourceRespectsCadenceAndCaches(t *testing.T) {
 	if err != nil || len(second) != 1 || fake.calls != 1 {
 		t.Fatalf("cached=%+v err=%v calls=%d", second, err, fake.calls)
 	}
+	status := source.SourceStatus()
+	if status.Attempts != 1 || status.Successes != 1 || status.SignalsProduced != 1 || status.CachedSignals != 1 {
+		t.Fatalf("unexpected first status: %+v", status)
+	}
 
 	now = now.Add(2 * time.Hour)
 	_, err = source.Discover(context.Background())
 	if err != nil || fake.calls != 2 {
 		t.Fatalf("refresh err=%v calls=%d", err, fake.calls)
+	}
+	status = source.SourceStatus()
+	if status.Attempts != 2 || status.Successes != 2 || status.SignalsProduced != 2 {
+		t.Fatalf("unexpected refresh status: %+v", status)
+	}
+	if status.LastDuration < 0 || status.AverageDuration < 0 {
+		t.Fatalf("invalid durations: %+v", status)
 	}
 }
 
@@ -63,6 +74,9 @@ func TestScheduledSourceBacksOffAndKeepsLastGoodBatch(t *testing.T) {
 	status := source.SourceStatus()
 	if status.Failures != 1 || status.LastError == "" || !status.NextRunAt.After(now) {
 		t.Fatalf("status=%+v", status)
+	}
+	if status.Attempts != 2 || status.Successes != 1 || status.SignalsProduced != 1 || status.CachedSignals != 1 {
+		t.Fatalf("failure counters=%+v", status)
 	}
 }
 
