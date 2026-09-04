@@ -28,8 +28,10 @@ type Source struct {
 	limit  int
 	name   string
 
-	mu    sync.Mutex
-	cache map[string]feedCache
+	mu          sync.Mutex
+	cache       map[string]feedCache
+	requests    int64
+	notModified int64
 }
 
 func New(client *http.Client, feeds []string, limit int) *Source {
@@ -57,6 +59,15 @@ func newSource(client *http.Client, name string, feeds []string, limit int) *Sou
 }
 
 func (s *Source) Name() string { return s.name }
+
+func (s *Source) RequestDiagnostics() (requests int64, notModified int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests, s.notModified
+}
 
 func (s *Source) Discover(ctx context.Context) ([]model.Signal, error) {
 	out := []model.Signal{}
@@ -117,13 +128,14 @@ type atomDoc struct {
 func (s *Source) fetch(ctx context.Context, feed string) ([]model.Signal, error) {
 	s.mu.Lock()
 	cached := s.cache[feed]
+	s.requests++
 	s.mu.Unlock()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feed, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Trendinary/0.3.1 (+https://trendinary.com; public-discovery)")
+	req.Header.Set("User-Agent", "Trendinary (+https://trendinary.com; public-discovery)")
 	if cached.ETag != "" {
 		req.Header.Set("If-None-Match", cached.ETag)
 	}
@@ -136,6 +148,9 @@ func (s *Source) fetch(ctx context.Context, feed string) ([]model.Signal, error)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotModified {
+		s.mu.Lock()
+		s.notModified++
+		s.mu.Unlock()
 		return cloneSignals(cached.Signals), nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

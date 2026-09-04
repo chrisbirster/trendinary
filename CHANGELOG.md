@@ -4,6 +4,29 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-03
+
+### Added
+
+- Per-source reliability telemetry for poll attempts, successes, signals produced, fetch latency, active failures, RSS request counts, and HTTP 304 conditional-cache reuse.
+- Seven-day source contribution analytics split by original publisher and discovery channel, including distinct signals, trends touched, first-hit counts, solo-source trends, and average lead time to the first BREAKING snapshot.
+- Private `GET /api/v1/admin/sources/analytics` source-intelligence endpoint and expanded `/admin/sources` fleet view for reliability and contribution analysis.
+- Durable immutable `first_observed_at` membership timestamps alongside rolling last-observed timestamps so first-discovery and lead-time claims survive repeated evidence refreshes.
+- Calibration v1 with deterministic replay threshold search from 0.30 through 0.70, explicit labeling progress, and reviewed recommendations rather than automatic production tuning.
+- Calibration safety gates requiring at least 100 distinct human-labeled trends and a persisted replay corpus with at least 50 signals before a cluster-threshold recommendation is produced.
+
+### Changed
+
+- `/admin/quality` prioritizes currently unlabeled live trends so the human calibration corpus can be built efficiently without manufacturing synthetic judgments.
+- Source operations now distinguish process-lifetime reliability from durable historical contribution; a healthy source is not automatically treated as a useful source and a high-volume source is not automatically treated as early.
+- Calibration recommendations remain advisory. Applying a score or clustering threshold still requires an explicit reviewed code change.
+
+### Fixed
+
+- Source first-hit and lead-to-BREAKING analytics no longer misuse the rolling membership `observed_at` value, which intentionally refreshes while evidence remains active; they now use immutable first-observed membership time.
+- Membership schema migration is additive and rolling-deploy safe for existing SQLite/Turso databases.
+- Calibration UI safely renders an unavailable threshold while the corpus is still below the recommendation gate.
+
 ## [0.3.1] - 2026-09-03
 
 ### Added

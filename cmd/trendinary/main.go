@@ -244,6 +244,9 @@ func runtimeSourceSnapshots(sources []scanner.DiscoverySource, inactive []runtim
 			ID: value.ID, Name: value.Name, Kind: value.Kind, Policy: value.Policy, URL: value.URL, TermsURL: value.TermsURL,
 			Enabled: value.Enabled, Cadence: value.Cadence, LastAttemptAt: value.LastAttemptAt, LastSuccessAt: value.LastSuccessAt,
 			NextRunAt: value.NextRunAt, LastError: value.LastError, Failures: value.Failures, CachedSignals: value.CachedSignals,
+			Attempts: value.Attempts, Successes: value.Successes, SignalsProduced: value.SignalsProduced,
+			LastDuration: value.LastDuration, AverageDuration: value.AverageDuration,
+			HTTPRequests: value.HTTPRequests, NotModified: value.NotModified,
 		})
 	}
 	out = append(out, inactive...)

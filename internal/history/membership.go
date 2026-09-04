@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ const membershipSchema = `
 CREATE TABLE IF NOT EXISTS trend_signal_memberships (
   trend_key TEXT NOT NULL,
   signal_id TEXT NOT NULL,
+  first_observed_at TEXT NOT NULL DEFAULT '',
   observed_at TEXT NOT NULL,
   PRIMARY KEY (trend_key, signal_id),
   FOREIGN KEY (signal_id) REFERENCES signals(id) ON DELETE CASCADE
@@ -33,13 +35,60 @@ func (s *Store) ensureMembershipSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, membershipSchema); err != nil {
 		return fmt.Errorf("ensure trend membership schema: %w", err)
 	}
+	if err := s.ensureMembershipFirstObservedAt(ctx); err != nil {
+		return err
+	}
 	membershipSchemaReady.Store(s, struct{}{})
 	return nil
 }
 
-// RecordTrendSignals preserves the evidence set that caused a signal cluster to
-// resolve to a stable trend identity. Membership observation time is refreshed
-// when the same evidence is seen again so rolling windows stay bounded.
+func (s *Store) ensureMembershipFirstObservedAt(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(trend_signal_memberships)`)
+	if err != nil {
+		return fmt.Errorf("inspect trend membership schema: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan trend membership schema: %w", err)
+		}
+		if name == "first_observed_at" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("inspect trend membership schema rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !found {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE trend_signal_memberships ADD COLUMN first_observed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			// During a rolling Fly deployment another process may have completed
+			// the same additive migration after this process inspected the table.
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return fmt.Errorf("add trend membership first observation: %w", err)
+			}
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE trend_signal_memberships
+SET first_observed_at = observed_at
+WHERE first_observed_at = ''`); err != nil {
+		return fmt.Errorf("backfill trend membership first observation: %w", err)
+	}
+	return nil
+}
+
+// RecordTrendSignals preserves both the first time evidence resolved into a
+// stable trend and the most recent time it remained relevant. The latter is
+// refreshed for rolling windows; the former is immutable discovery timing used
+// by source-contribution analytics.
 func (s *Store) RecordTrendSignals(ctx context.Context, trendKey string, values []model.Signal, observedAt time.Time) error {
 	if trendKey == "" || len(values) == 0 {
 		return nil
@@ -50,6 +99,7 @@ func (s *Store) RecordTrendSignals(ctx context.Context, trendKey string, values 
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
 	}
+	stamp := observedAt.UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -60,10 +110,10 @@ func (s *Store) RecordTrendSignals(ctx context.Context, trendKey string, values 
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO trend_signal_memberships (trend_key, signal_id, observed_at)
-VALUES (?, ?, ?)
+INSERT INTO trend_signal_memberships (trend_key, signal_id, first_observed_at, observed_at)
+VALUES (?, ?, ?, ?)
 ON CONFLICT(trend_key, signal_id) DO UPDATE SET observed_at=excluded.observed_at`,
-			trendKey, signal.ID, observedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			trendKey, signal.ID, stamp, stamp); err != nil {
 			return fmt.Errorf("record trend membership %s/%s: %w", trendKey, signal.ID, err)
 		}
 	}

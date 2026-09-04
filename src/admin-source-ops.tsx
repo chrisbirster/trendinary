@@ -8,8 +8,13 @@ import {
   setSourceEnabled,
   type EditorialSource,
   type IngestionRun,
-  type TrendSourceStatus,
 } from "./admin-api";
+import {
+  fetchSourceAnalytics,
+  type SourceAnalyticsReport,
+  type SourceContribution,
+  type SourceReliabilityStatus,
+} from "./source-intelligence-api";
 import { adminStyles as styles } from "./admin.stylex";
 
 const sx = stylex.attrs;
@@ -26,6 +31,7 @@ function SourceShell(props: { children: unknown }) {
     ["Notes", "/admin/notes"],
     ["Issues", "/admin/issues"],
     ["Sources", "/admin/sources"],
+    ["Quality", "/admin/quality"],
     ["Trash", "/admin/trash"],
   ];
   return (
@@ -44,7 +50,7 @@ function SourceShell(props: { children: unknown }) {
             <div>
               <div {...sx(styles.eyebrow)}>Discovery operations</div>
               <h1 {...sx(styles.title)}>Sources</h1>
-              <p {...sx(styles.copy)}>Everything Trendinary listens to, how often it is allowed to poll, and whether each upstream is healthy.</p>
+              <p {...sx(styles.copy)}>Everything Trendinary listens to, whether it is healthy, and whether it actually contributes useful early evidence.</p>
             </div>
           </header>
           {props.children as never}
@@ -72,15 +78,53 @@ function cadenceLabel(nanoseconds: number) {
   return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
 }
 
-function sourceState(source: TrendSourceStatus) {
+function durationLabel(nanoseconds?: number) {
+  if (!nanoseconds) return "—";
+  const milliseconds = nanoseconds / 1_000_000;
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
+  return `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
+function percent(numerator = 0, denominator = 0) {
+  if (denominator <= 0) return "—";
+  return `${Math.round((numerator / denominator) * 100)}%`;
+}
+
+function sourceState(source: SourceReliabilityStatus) {
   if (!source.enabled) return "NOT CONFIGURED";
   if (source.last_error) return "DEGRADED";
+  if (source.last_success_at && source.cadence > 0) {
+    const ageMs = Date.now() - new Date(source.last_success_at).getTime();
+    const staleMs = Math.max(30 * 60_000, (source.cadence / 1_000_000) * 3);
+    if (ageMs > staleMs) return "STALE";
+  }
   if (source.last_success_at) return "HEALTHY";
   return "SCHEDULED";
 }
 
+function ContributionRows(props: { title: string; items: SourceContribution[] }) {
+  return <section {...sx(styles.issueSection)}>
+    <h2 {...sx(styles.sectionTitle)}>{props.title}</h2>
+    <div {...sx(styles.list)}>
+      <For each={props.items.slice(0, 12)}>{(item) =>
+        <div {...sx(styles.sourceRow)}>
+          <div><strong>{item.name}</strong><div {...sx(styles.copy)}>{item.key}</div></div>
+          <span>{item.first_hits} first hits</span>
+          <span>{item.trends} trends</span>
+          <span>{item.signals} signals</span>
+          <div>
+            <span>{item.solo_trends} solo</span>
+            <div {...sx(styles.copy)}>{item.average_lead_to_breaking_minutes > 0 ? `${Math.round(item.average_lead_to_breaking_minutes)}m avg lead` : "no BREAKING lead sample"}</div>
+          </div>
+        </div>
+      }</For>
+    </div>
+  </section>;
+}
+
 export function AdminSourcesPage() {
-  const [trendSources, setTrendSources] = createSignal<TrendSourceStatus[]>([]);
+  const [trendSources, setTrendSources] = createSignal<SourceReliabilityStatus[]>([]);
+  const [analytics, setAnalytics] = createSignal<SourceAnalyticsReport>();
   const [editorialSources, setEditorialSources] = createSignal<EditorialSource[]>([]);
   const [runs, setRuns] = createSignal<IngestionRun[]>([]);
   const [busy, setBusy] = createSignal<string>();
@@ -91,9 +135,14 @@ export function AdminSourcesPage() {
     setLoading(true);
     setError(undefined);
     try {
-      const [health, editorial] = await Promise.all([fetchTrendSourceHealth(), fetchSources()]);
-      setTrendSources(health.sources ?? []);
+      const [health, editorial, contribution] = await Promise.all([
+        fetchTrendSourceHealth(),
+        fetchSources(),
+        fetchSourceAnalytics("168h"),
+      ]);
+      setTrendSources((health.sources ?? []) as SourceReliabilityStatus[]);
       setEditorialSources(editorial);
+      setAnalytics(contribution);
     } catch (reason) {
       setError(errorMessage(reason));
     } finally {
@@ -126,12 +175,16 @@ export function AdminSourcesPage() {
     }
   };
 
+  const fleetAttempts = () => trendSources().reduce((sum, source) => sum + (source.attempts ?? 0), 0);
+  const fleetSuccesses = () => trendSources().reduce((sum, source) => sum + (source.successes ?? 0), 0);
+  const fleetSignals = () => trendSources().reduce((sum, source) => sum + (source.signals_produced ?? 0), 0);
+
   return <SourceShell>
     <Show when={error()}>{(value) => <div {...sx(styles.error)}>{value()}</div>}</Show>
     <Show when={!loading()} fallback={<div {...sx(styles.status)}>Loading source operations…</div>}>
       <section {...sx(styles.issueSection)}>
-        <h2 {...sx(styles.sectionTitle)}>Trend signal sources · {trendSources().filter((source) => source.enabled).length} active</h2>
-        <p {...sx(styles.copy)}>Public trend detection. RSS sources use conditional requests and source-specific cadences; APIs and streams keep their own limits.</p>
+        <h2 {...sx(styles.sectionTitle)}>Fleet reliability · {trendSources().filter((source) => source.enabled).length} active</h2>
+        <p {...sx(styles.copy)}>Process-lifetime counters: {fleetSuccesses()}/{fleetAttempts()} successful polls · {fleetSignals()} signals produced. RSS sources also report conditional-request reuse.</p>
         <div {...sx(styles.list)}>
           <For each={trendSources()}>{(source) =>
             <div {...sx(styles.sourceRow)}>
@@ -142,10 +195,11 @@ export function AdminSourcesPage() {
                 <Show when={source.terms_url}><a href={source.terms_url} target="_blank" rel="noreferrer" {...sx(styles.backLink)}>policy / docs ↗</a></Show>
               </div>
               <span>{sourceState(source)}</span>
-              <span>every {cadenceLabel(source.cadence)}</span>
-              <span>last {relativeTime(source.last_success_at)}</span>
+              <div><span>every {cadenceLabel(source.cadence)}</span><div {...sx(styles.copy)}>avg {durationLabel(source.average_duration)}</div></div>
+              <div><span>{percent(source.successes, source.attempts)} success</span><div {...sx(styles.copy)}>last {relativeTime(source.last_success_at)}</div></div>
               <div>
-                <span>{source.cached_signals ?? 0} signals</span>
+                <span>{source.cached_signals ?? 0} cached · {source.signals_produced ?? 0} produced</span>
+                <Show when={(source.http_requests ?? 0) > 0}><div {...sx(styles.copy)}>{percent(source.not_modified, source.http_requests)} HTTP 304</div></Show>
                 <Show when={source.last_error}><div {...sx(styles.error)}>{source.last_error}</div></Show>
                 <Show when={source.next_run_at && source.enabled}><div {...sx(styles.copy)}>next {relativeTime(source.next_run_at).replace(" ago", "")}</div></Show>
               </div>
@@ -153,6 +207,11 @@ export function AdminSourcesPage() {
           }</For>
         </div>
       </section>
+
+      <Show when={analytics()}>{(value) => <>
+        <ContributionRows title="Publisher contribution · last 7 days" items={value().publishers} />
+        <ContributionRows title="Discovery-channel contribution · last 7 days" items={value().channels} />
+      </>}</Show>
 
       <section {...sx(styles.issueSection)}>
         <h2 {...sx(styles.sectionTitle)}>Editorial discovery sources</h2>

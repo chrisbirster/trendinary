@@ -30,20 +30,27 @@ type ScannerSnapshot struct {
 }
 
 type SourceSnapshot struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Kind          string        `json:"kind"`
-	Policy        string        `json:"policy,omitempty"`
-	URL           string        `json:"url,omitempty"`
-	TermsURL      string        `json:"terms_url,omitempty"`
-	Enabled       bool          `json:"enabled"`
-	Cadence       time.Duration `json:"cadence"`
-	LastAttemptAt time.Time     `json:"last_attempt_at,omitempty"`
-	LastSuccessAt time.Time     `json:"last_success_at,omitempty"`
-	NextRunAt     time.Time     `json:"next_run_at,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
-	Failures      int           `json:"failures"`
-	CachedSignals int           `json:"cached_signals"`
+	ID              string        `json:"id"`
+	Name            string        `json:"name"`
+	Kind            string        `json:"kind"`
+	Policy          string        `json:"policy,omitempty"`
+	URL             string        `json:"url,omitempty"`
+	TermsURL        string        `json:"terms_url,omitempty"`
+	Enabled         bool          `json:"enabled"`
+	Cadence         time.Duration `json:"cadence"`
+	LastAttemptAt   time.Time     `json:"last_attempt_at,omitempty"`
+	LastSuccessAt   time.Time     `json:"last_success_at,omitempty"`
+	NextRunAt       time.Time     `json:"next_run_at,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	Failures        int           `json:"failures"`
+	CachedSignals   int           `json:"cached_signals"`
+	Attempts        int64         `json:"attempts"`
+	Successes       int64         `json:"successes"`
+	SignalsProduced int64         `json:"signals_produced"`
+	LastDuration    time.Duration `json:"last_duration"`
+	AverageDuration time.Duration `json:"average_duration"`
+	HTTPRequests    int64         `json:"http_requests"`
+	NotModified     int64         `json:"not_modified"`
 }
 
 type Snapshot struct {
