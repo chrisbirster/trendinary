@@ -56,3 +56,35 @@ func TestDiscoverSurvivesOneBrokenFeed(t *testing.T) {
 		t.Fatalf("values = %+v", values)
 	}
 }
+
+func TestConditionalRSSRequestReturnsCachedBatchAndReports304(t *testing.T) {
+	const etag = `"v1"`
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests > 1 {
+			if r.Header.Get("If-None-Match") != etag {
+				t.Fatalf("If-None-Match = %q, want %q", r.Header.Get("If-None-Match"), etag)
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		_, _ = w.Write([]byte(`<?xml version="1.0"?><rss><channel><title>Conditional</title><item><title>Cached Story</title><link>https://cached.example/story</link></item></channel></rss>`))
+	}))
+	defer server.Close()
+
+	source := NewFeed(server.Client(), "Conditional", server.URL, 10)
+	first, err := source.Discover(context.Background())
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := source.Discover(context.Background())
+	if err != nil || len(second) != 1 || second[0].ID != first[0].ID {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	requestCount, notModified := source.RequestDiagnostics()
+	if requestCount != 2 || notModified != 1 {
+		t.Fatalf("diagnostics requests=%d not_modified=%d", requestCount, notModified)
+	}
+}
