@@ -2,6 +2,8 @@ package following
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
@@ -243,32 +245,21 @@ func TestAES128GCMWebPushRoundTrip(t *testing.T) {
 	prk := hkdfExtract(salt, ikm)
 	cek := hkdfExpand(prk, []byte("Content-Encoding: aes128gcm\x00"), 16)
 	nonce := hkdfExpand(prk, []byte("Content-Encoding: nonce\x00"), 12)
-	block, err := aesNewCipher(cek)
+	block, err := aes.NewCipher(cek)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plaintext, err := openGCM(block, nonce, body[21+keyLength:])
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, body[21+keyLength:], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plaintext) != len(payload)+1 || plaintext[len(plaintext)-1] != 0x02 || string(plaintext[:len(payload)]) != string(payload) {
 		t.Fatalf("decrypted payload=%q", plaintext)
 	}
-}
-
-// Wrappers keep the round-trip test focused without duplicating production key
-// derivation. They are tiny enough to make failures point at encryption rather
-// than HTTP delivery.
-func aesNewCipher(key []byte) (cipherBlock, error) { return newAESBlock(key) }
-
-type cipherBlock interface {
-	BlockSize() int
-	Encrypt(dst, src []byte)
-	Decrypt(dst, src []byte)
-}
-
-func openGCM(block cipherBlock, nonce, ciphertext []byte) ([]byte, error) {
-	return openAESGCM(block, nonce, ciphertext)
 }
 
 func TestGonePushEndpointIsDisabled(t *testing.T) {
