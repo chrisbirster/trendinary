@@ -10,28 +10,53 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
+type feedCache struct {
+	ETag         string
+	LastModified string
+	Signals      []model.Signal
+}
+
 type Source struct {
 	client *http.Client
 	feeds  []string
 	limit  int
+	name   string
+
+	mu    sync.Mutex
+	cache map[string]feedCache
 }
 
 func New(client *http.Client, feeds []string, limit int) *Source {
+	return newSource(client, "rss/news", feeds, limit)
+}
+
+// NewFeed creates a separately schedulable RSS adapter. Keeping each publisher
+// feed distinct lets source operations show cadence, failures, and last success
+// without turning RSS into one opaque mega-source.
+func NewFeed(client *http.Client, name, feed string, limit int) *Source {
+	if strings.TrimSpace(name) == "" {
+		name = "rss:" + host(feed)
+	}
+	return newSource(client, name, []string{feed}, limit)
+}
+
+func newSource(client *http.Client, name string, feeds []string, limit int) *Source {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	if limit <= 0 {
 		limit = 40
 	}
-	return &Source{client: client, feeds: feeds, limit: limit}
+	return &Source{client: client, feeds: feeds, limit: limit, name: name, cache: map[string]feedCache{}}
 }
 
-func (s *Source) Name() string { return "rss/news" }
+func (s *Source) Name() string { return s.name }
 
 func (s *Source) Discover(ctx context.Context) ([]model.Signal, error) {
 	out := []model.Signal{}
@@ -90,24 +115,53 @@ type atomDoc struct {
 }
 
 func (s *Source) fetch(ctx context.Context, feed string) ([]model.Signal, error) {
+	s.mu.Lock()
+	cached := s.cache[feed]
+	s.mu.Unlock()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feed, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Trendinary/0.2 (+https://trendinary.com; public-discovery)")
+	req.Header.Set("User-Agent", "Trendinary/0.3.1 (+https://trendinary.com; public-discovery)")
+	if cached.ETag != "" {
+		req.Header.Set("If-None-Match", cached.ETag)
+	}
+	if cached.LastModified != "" {
+		req.Header.Set("If-Modified-Since", cached.LastModified)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return cloneSignals(cached.Signals), err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return cloneSignals(cached.Signals), nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s returned HTTP %d", feed, resp.StatusCode)
+		return cloneSignals(cached.Signals), fmt.Errorf("%s returned HTTP %d", feed, resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return cloneSignals(cached.Signals), err
 	}
 
+	values, err := parseFeed(feed, data)
+	if err != nil {
+		return cloneSignals(cached.Signals), err
+	}
+	next := feedCache{
+		ETag:         strings.TrimSpace(resp.Header.Get("ETag")),
+		LastModified: strings.TrimSpace(resp.Header.Get("Last-Modified")),
+		Signals:      cloneSignals(values),
+	}
+	s.mu.Lock()
+	s.cache[feed] = next
+	s.mu.Unlock()
+	return values, nil
+}
+
+func parseFeed(feed string, data []byte) ([]model.Signal, error) {
 	var rss rssDoc
 	if xml.Unmarshal(data, &rss) == nil && len(rss.Channel.Items) > 0 {
 		sourceName := strings.TrimSpace(rss.Channel.Title)
@@ -158,14 +212,17 @@ func (s *Source) fetch(ctx context.Context, feed string) ([]model.Signal, error)
 
 func signal(sourceName, link, title, text, author, published string) model.Signal {
 	sum := sha256.Sum256([]byte(link))
+	title = strings.TrimSpace(title)
 	return model.Signal{
-		ID:          "rss:" + hex.EncodeToString(sum[:8]),
-		Source:      model.Source{Name: sourceName, Domain: host(link), URL: link},
-		Title:       strings.TrimSpace(title),
-		Text:        strip(text),
-		URL:         link,
-		Author:      strings.TrimSpace(author),
-		PublishedAt: published,
+		ID:               "rss:" + hex.EncodeToString(sum[:8]),
+		Source:           model.Source{Name: sourceName, Domain: host(link), URL: link},
+		DiscoveryChannel: "rss",
+		Title:            title,
+		ClusterText:      title,
+		Text:             strip(text),
+		URL:              link,
+		Author:           strings.TrimSpace(author),
+		PublishedAt:      published,
 	}
 }
 
@@ -194,4 +251,10 @@ func strip(value string) string {
 		value = value[:500]
 	}
 	return strings.TrimSpace(value)
+}
+
+func cloneSignals(values []model.Signal) []model.Signal {
+	out := make([]model.Signal, len(values))
+	copy(out, values)
+	return out
 }

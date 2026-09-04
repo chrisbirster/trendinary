@@ -1,60 +1,186 @@
 package engine
 
 import (
-	"net/url"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
-// ClusterSignalsV2 keeps the transparent lexical pass, then merges lexical
-// clusters only when their entity/term signatures provide additional evidence.
-// It is deliberately deterministic: no opaque embedding service decides what
-// becomes a trend.
+// ClusterSignalsV2 performs deterministic event resolution directly across
+// normalized signals. It accepts a strong lexical match immediately, then uses
+// headline overlap, named-entity overlap, and publication proximity to recover
+// the same event when publishers phrase the headline differently.
 func ClusterSignalsV2(input []model.Signal, threshold float64) []Cluster {
-	base := ClusterSignals(input, threshold)
-	if len(base) < 2 { return base }
-	parent:=make([]int,len(base));for i:=range parent{parent[i]=i}
-	var find func(int)int;find=func(x int)int{if parent[x]!=x{parent[x]=find(parent[x])};return parent[x]}
-	union:=func(a,b int){ra,rb:=find(a),find(b);if ra!=rb{parent[rb]=ra}}
-	for i:=0;i<len(base);i++{for j:=i+1;j<len(base);j++{if clusterSemanticSimilarity(base[i],base[j])>=0.68{union(i,j)}}}
-	groups:=map[int][]model.Signal{}
-	for i,cluster:=range base{root:=find(i);groups[root]=append(groups[root],cluster.Signals...)}
-	out:=make([]Cluster,0,len(groups));for _,signals:=range groups{out=append(out,Cluster{Key:clusterKey(signals),Signals:signals})}
-	sort.SliceStable(out,func(i,j int)bool{if len(out[i].Signals)==len(out[j].Signals){return out[i].Key<out[j].Key};return len(out[i].Signals)>len(out[j].Signals)})
+	if threshold <= 0 || threshold > 1 {
+		threshold = 0.42
+	}
+	parent := make([]int, len(input))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(x int) int {
+		if parent[x] != x {
+			parent[x] = find(parent[x])
+		}
+		return parent[x]
+	}
+	union := func(a, b int) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[rb] = ra
+		}
+	}
+	for i := 0; i < len(input); i++ {
+		for j := i + 1; j < len(input); j++ {
+			if SameEvent(input[i], input[j], threshold) {
+				union(i, j)
+			}
+		}
+	}
+	groups := map[int][]model.Signal{}
+	for i, signal := range input {
+		groups[find(i)] = append(groups[find(i)], signal)
+	}
+	out := make([]Cluster, 0, len(groups))
+	for _, signals := range groups {
+		out = append(out, Cluster{Key: clusterKey(signals), Signals: signals})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if len(out[i].Signals) == len(out[j].Signals) {
+			return out[i].Key < out[j].Key
+		}
+		return len(out[i].Signals) > len(out[j].Signals)
+	})
 	return out
 }
 
-func clusterSemanticSimilarity(a,b Cluster)float64{
-	termsA,entitiesA:=clusterSignatures(a.Signals);termsB,entitiesB:=clusterSignatures(b.Signals)
-	lexical:=similarity(termsA,termsB);entity:=similarity(entitiesA,entitiesB)
-	sharedEntity:=false;for key:=range entitiesA{if _,ok:=entitiesB[key];ok{sharedEntity=true;break}}
-	score:=lexical*.65+entity*.35;if sharedEntity{score+=.15};if score>1{score=1};return score
+// SameEvent is intentionally inspectable. Domain equality is not evidence: two
+// articles from the same publisher can be unrelated and the same event can be
+// reported by dozens of different publishers.
+func SameEvent(a, b model.Signal, lexicalThreshold float64) bool {
+	termsA, termsB := SignalTerms(a), SignalTerms(b)
+	lexical := similarity(termsA, termsB)
+	if lexical >= lexicalThreshold {
+		return true
+	}
+	overlap := overlapCoefficient(termsA, termsB)
+	entitiesA, entitiesB := EntityKeys(a), EntityKeys(b)
+	entity := similarity(entitiesA, entitiesB)
+	sharedEntity := hasSharedKey(entitiesA, entitiesB)
+	proximity := timeProximity(a.PublishedAt, b.PublishedAt)
+
+	score := lexical*.25 + overlap*.40 + entity*.25 + proximity*.10
+	// Different publishers often share only the central named entity while
+	// choosing completely different verbs and modifiers. A 20% term overlap is
+	// enough additional evidence when that entity agrees and timing is close;
+	// the final score still rejects unrelated stories about the same company.
+	if sharedEntity && overlap >= .20 {
+		score += .15
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score >= .52 && (overlap >= .20 || entity >= .34)
 }
 
-func clusterSignatures(signals []model.Signal)(map[string]struct{},map[string]struct{}){
-	terms:=map[string]struct{}{};entities:=map[string]struct{}{}
-	for _,signal:=range signals{for key:=range SignalTerms(signal){terms[key]=struct{}{}};for key:=range EntityKeys(signal){entities[key]=struct{}{}}}
-	return terms,entities
+func hasSharedKey(a, b map[string]struct{}) bool {
+	for key := range a {
+		if _, ok := b[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
-// EntityKeys extracts high-precision, explainable entity hints: hashtags,
-// capitalized name phrases, linked domains, and meaningful URL path roots.
-func EntityKeys(signal model.Signal)map[string]struct{}{
-	out:=map[string]struct{}{}
-	words:=strings.Fields(signal.Title)
-	phrase:=[]string{}
-	flush:=func(){if len(phrase)>0{joined:=strings.ToLower(strings.Join(phrase," "));if len(joined)>=3{out["name:"+joined]=struct{}{}};phrase=phrase[:0]}}
-	for _,raw:=range words{
-		trimmed:=strings.Trim(raw,".,:;!?()[]{}\"'`“”")
-		if strings.HasPrefix(trimmed,"#")&&len(trimmed)>1{out["tag:"+canonicalToken(trimmed)]=struct{}{}}
-		if startsUpper(trimmed)&&!allUpperNoise(trimmed){phrase=append(phrase,trimmed)}else{flush()}
-	};flush()
-	if parsed,err:=url.Parse(signal.URL);err==nil&&parsed.Hostname()!=""{host:=strings.ToLower(strings.TrimPrefix(parsed.Hostname(),"www."));out["domain:"+host]=struct{}{};segments:=strings.Split(strings.Trim(parsed.Path,"/"),"/");if len(segments)>0&&segments[0]!=""&&segments[0]!="watch"&&segments[0]!="item"{out["path:"+host+":"+strings.ToLower(segments[0])]=struct{}{}}}
+func timeProximity(a, b string) float64 {
+	left, lok := parseSignalTime(a)
+	right, rok := parseSignalTime(b)
+	if !lok || !rok {
+		return 0
+	}
+	delta := left.Sub(right)
+	if delta < 0 {
+		delta = -delta
+	}
+	switch {
+	case delta <= 2*time.Hour:
+		return 1
+	case delta <= 6*time.Hour:
+		return .8
+	case delta <= 24*time.Hour:
+		return .55
+	case delta <= 72*time.Hour:
+		return .2
+	default:
+		return 0
+	}
+}
+
+func parseSignalTime(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// EntityKeys extracts only semantic hints from the event text: hashtags and
+// capitalized name phrases. Publisher domains and URL paths are provenance and
+// are deliberately excluded from event similarity.
+func EntityKeys(signal model.Signal) map[string]struct{} {
+	out := map[string]struct{}{}
+	words := strings.Fields(ClusteringText(signal))
+	phrase := []string{}
+	flush := func() {
+		if len(phrase) > 0 {
+			joined := strings.ToLower(strings.Join(phrase, " "))
+			if len(joined) >= 3 {
+				out["name:"+joined] = struct{}{}
+			}
+			phrase = phrase[:0]
+		}
+	}
+	for _, raw := range words {
+		trimmed := strings.Trim(raw, ".,:;!?()[]{}\"'`“”")
+		if strings.HasPrefix(trimmed, "#") && len(trimmed) > 1 {
+			out["tag:"+canonicalToken(trimmed)] = struct{}{}
+		}
+		if startsUpper(trimmed) && !allUpperNoise(trimmed) {
+			phrase = append(phrase, trimmed)
+		} else {
+			flush()
+		}
+	}
+	flush()
 	return out
 }
 
-func startsUpper(value string)bool{for _,r:=range value{if unicode.IsLetter(r){return unicode.IsUpper(r)}};return false}
-func allUpperNoise(value string)bool{letters:=0;upper:=0;for _,r:=range value{if unicode.IsLetter(r){letters++;if unicode.IsUpper(r){upper++}}};return letters<=1||upper==letters&&letters<=3}
+func startsUpper(value string) bool {
+	for _, r := range value {
+		if unicode.IsLetter(r) {
+			return unicode.IsUpper(r)
+		}
+	}
+	return false
+}
+
+func allUpperNoise(value string) bool {
+	letters, upper := 0, 0
+	for _, r := range value {
+		if unicode.IsLetter(r) {
+			letters++
+			if unicode.IsUpper(r) {
+				upper++
+			}
+		}
+	}
+	return letters <= 1 || upper == letters && letters <= 3
+}
