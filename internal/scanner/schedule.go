@@ -149,7 +149,7 @@ func (s *ScheduledSource) SourceStatus() SourceStatus {
 	defer s.mu.Unlock()
 	average := time.Duration(0)
 	if s.attempts > 0 {
-		average = s.totalDuration / time.Duration(s.attempts)
+		average = time.Duration(int64(s.totalDuration) / s.attempts)
 	}
 	var requests, notModified int64
 	if provider, ok := s.source.(requestDiagnosticsProvider); ok {
