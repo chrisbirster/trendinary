@@ -43,34 +43,61 @@ export type FollowingState = {
 
 const emptyState = (): FollowingState => ({ version: 1, follows: [], alerts: [] });
 
+function cloneState(state: FollowingState): FollowingState {
+  return {
+    version: 1,
+    follows: state.follows.map((follow) => ({
+      ...follow,
+      baseline: follow.baseline ? { ...follow.baseline } : undefined,
+    })),
+    alerts: state.alerts.map((alert) => ({ ...alert })),
+  };
+}
+
+let memoryState = emptyState();
+let storageDisabledForSession = false;
+
 function hasStorage() {
+  if (storageDisabledForSession) return false;
   try {
     return typeof window !== "undefined" && "localStorage" in window;
   } catch {
+    storageDisabledForSession = true;
     return false;
   }
 }
 
 export function loadFollowingState(): FollowingState {
-  if (!hasStorage()) return emptyState();
+  if (!hasStorage()) return cloneState(memoryState);
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return emptyState();
+    if (!raw) {
+      memoryState = emptyState();
+      return cloneState(memoryState);
+    }
     const value = JSON.parse(raw) as Partial<FollowingState>;
-    if (value.version !== 1 || !Array.isArray(value.follows) || !Array.isArray(value.alerts)) return emptyState();
-    return { version: 1, follows: value.follows, alerts: value.alerts };
+    if (value.version !== 1 || !Array.isArray(value.follows) || !Array.isArray(value.alerts)) {
+      memoryState = emptyState();
+      return cloneState(memoryState);
+    }
+    memoryState = { version: 1, follows: value.follows, alerts: value.alerts };
+    return cloneState(memoryState);
   } catch {
-    return emptyState();
+    storageDisabledForSession = true;
+    return cloneState(memoryState);
   }
 }
 
 function persist(state: FollowingState) {
+  memoryState = cloneState(state);
   if (!hasStorage()) return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryState));
   } catch {
-    // Private browsing/storage policy can disable persistence. The current
-    // in-memory UI remains usable instead of turning a storage denial into a crash.
+    // Some private-browsing/storage policies allow reads but reject writes.
+    // Stay on the in-memory state for the rest of this page session so later
+    // actions cannot reload stale persisted data and erase the user's radar.
+    storageDisabledForSession = true;
   }
 }
 
@@ -110,28 +137,28 @@ export function followTrend(trend: Trend) {
   };
   state.follows = [next, ...state.follows.filter((follow) => follow.slug !== trend.slug)];
   persist(state);
-  return state;
+  return cloneState(memoryState);
 }
 
 export function unfollowTrend(slug: string) {
   const state = loadFollowingState();
   state.follows = state.follows.filter((follow) => follow.slug !== slug);
   persist(state);
-  return state;
+  return cloneState(memoryState);
 }
 
 export function markFollowingAlertsRead() {
   const state = loadFollowingState();
   state.alerts = state.alerts.map((alert) => ({ ...alert, read: true }));
   persist(state);
-  return state;
+  return cloneState(memoryState);
 }
 
 export function clearFollowingAlerts() {
   const state = loadFollowingState();
   state.alerts = [];
   persist(state);
-  return state;
+  return cloneState(memoryState);
 }
 
 function lifecycleRank(status: Trend["status"]) {
@@ -286,7 +313,7 @@ export async function refreshFollowing(
   state.alerts = [...newAlerts.reverse(), ...state.alerts].slice(0, MAX_ALERTS);
   persist(state);
   for (const alert of newAlerts) maybeNotify(alert);
-  return state;
+  return cloneState(memoryState);
 }
 
 export function startFollowingMonitor(onUpdate: (state: FollowingState) => void, intervalMs = 60_000) {
