@@ -9,6 +9,7 @@ import (
 )
 
 const calibrationRequiredLabels = 100
+const calibrationRequiredReplaySignals = 50
 const currentClusterThreshold = 0.42
 
 type CalibrationCandidate struct {
@@ -21,6 +22,8 @@ type CalibrationV1 struct {
 	Ready                       bool                  `json:"ready"`
 	RequiredLabels              int                   `json:"required_labels"`
 	Labels                      int                   `json:"labels"`
+	RequiredReplaySignals       int                   `json:"required_replay_signals"`
+	ReplaySignals               int                   `json:"replay_signals"`
 	CurrentClusterThreshold     float64               `json:"current_cluster_threshold"`
 	RecommendedClusterThreshold *float64              `json:"recommended_cluster_threshold,omitempty"`
 	RecommendedMinScore         int                   `json:"recommended_min_score"`
@@ -30,8 +33,9 @@ type CalibrationV1 struct {
 }
 
 // CalibrationV1 refuses to recommend a clustering threshold until enough
-// distinct human-labeled trends exist. Before that point it reports progress
-// and current metrics only; production behavior is not tuned from a tiny sample.
+// distinct human-labeled trends and persisted replay evidence exist. Before
+// that point it reports progress only; production behavior is never tuned from
+// a tiny or membership-empty sample.
 func (s *Store) CalibrationV1(ctx context.Context) (CalibrationV1, error) {
 	report, err := s.QualityReport(ctx)
 	if err != nil {
@@ -41,16 +45,27 @@ func (s *Store) CalibrationV1(ctx context.Context) (CalibrationV1, error) {
 	if err != nil {
 		return CalibrationV1{}, err
 	}
+	readyLabels := report.Labels >= calibrationRequiredLabels
+	readyReplay := current.Signals >= calibrationRequiredReplaySignals
 	value := CalibrationV1{
-		Ready:                   report.Labels >= calibrationRequiredLabels,
+		Ready:                   readyLabels && readyReplay,
 		RequiredLabels:          calibrationRequiredLabels,
 		Labels:                  report.Labels,
+		RequiredReplaySignals:   calibrationRequiredReplaySignals,
+		ReplaySignals:           current.Signals,
 		CurrentClusterThreshold: currentClusterThreshold,
 		RecommendedMinScore:     report.RecommendedMinScore,
 		CurrentReplay:           current,
 	}
 	if !value.Ready {
-		value.Note = fmt.Sprintf("Collect %d more distinct human-labeled trends before tuning thresholds.", calibrationRequiredLabels-report.Labels)
+		switch {
+		case !readyLabels && !readyReplay:
+			value.Note = fmt.Sprintf("Collect %d more distinct human-labeled trends and at least %d persisted replay signals before tuning thresholds.", max(0, calibrationRequiredLabels-report.Labels), calibrationRequiredReplaySignals)
+		case !readyLabels:
+			value.Note = fmt.Sprintf("Collect %d more distinct human-labeled trends before tuning thresholds.", calibrationRequiredLabels-report.Labels)
+		default:
+			value.Note = fmt.Sprintf("Human label count is sufficient, but replay has only %d/%d persisted signals; wait for labeled trend memberships to accumulate before tuning.", current.Signals, calibrationRequiredReplaySignals)
+		}
 		return value, nil
 	}
 
