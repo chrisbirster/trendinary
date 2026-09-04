@@ -46,6 +46,8 @@ export type CalibrationV1 = {
   ready: boolean;
   required_labels: number;
   labels: number;
+  required_replay_signals: number;
+  replay_signals: number;
   current_cluster_threshold: number;
   recommended_cluster_threshold?: number;
   recommended_min_score: number;
