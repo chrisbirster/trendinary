@@ -2,7 +2,6 @@ package editorial
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -56,18 +55,20 @@ func (s *Store) SourceAnalytics(ctx context.Context, since time.Time) (SourceAna
 		since = time.Now().UTC().Add(-7 * 24 * time.Hour)
 	}
 
+	// observed_at is the rolling last-seen timestamp used to decide whether a
+	// membership remains active in this report window. first_observed_at is
+	// immutable and is the only timestamp used for first-hit / lead-time claims.
 	rows, err := s.db.QueryContext(ctx, `
 SELECT sig.id,
        sig.source_name,
        COALESCE(sig.source_domain, ''),
        COALESCE(sig.discovery_channel, ''),
-       sig.observed_at,
        m.trend_key,
-       m.observed_at
-FROM signals sig
-LEFT JOIN trend_signal_memberships m ON m.signal_id = sig.id
-WHERE sig.observed_at >= ?
-ORDER BY sig.observed_at`, since.UTC().Format(time.RFC3339Nano))
+       COALESCE(NULLIF(m.first_observed_at, ''), m.observed_at)
+FROM trend_signal_memberships m
+JOIN signals sig ON sig.id = m.signal_id
+WHERE m.observed_at >= ?
+ORDER BY m.observed_at`, since.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return SourceAnalyticsReport{}, fmt.Errorf("source analytics signals: %w", err)
 	}
@@ -89,9 +90,8 @@ ORDER BY sig.observed_at`, since.UTC().Format(time.RFC3339Nano))
 	}
 
 	for rows.Next() {
-		var signalID, sourceName, sourceDomain, channel, observedAt string
-		var trendKey, membershipAt sql.NullString
-		if err := rows.Scan(&signalID, &sourceName, &sourceDomain, &channel, &observedAt, &trendKey, &membershipAt); err != nil {
+		var signalID, sourceName, sourceDomain, channel, trendKey, firstObservedAt string
+		if err := rows.Scan(&signalID, &sourceName, &sourceDomain, &channel, &trendKey, &firstObservedAt); err != nil {
 			return SourceAnalyticsReport{}, err
 		}
 		publisherKey := strings.TrimSpace(strings.ToLower(sourceDomain))
@@ -115,19 +115,14 @@ ORDER BY sig.observed_at`, since.UTC().Format(time.RFC3339Nano))
 		ch := get(channels, channelKey, channelKey)
 		ch.signals[signalID] = struct{}{}
 
-		if !trendKey.Valid || strings.TrimSpace(trendKey.String) == "" {
+		key := strings.TrimSpace(trendKey)
+		if key == "" {
 			continue
 		}
-		key := trendKey.String
 		pub.trends[key] = struct{}{}
 		ch.trends[key] = struct{}{}
 
-		at := parseAnalyticsTime(observedAt)
-		if membershipAt.Valid {
-			if parsed := parseAnalyticsTime(membershipAt.String); !parsed.IsZero() {
-				at = parsed
-			}
-		}
+		at := parseAnalyticsTime(firstObservedAt)
 		if existing := pub.trendFirstAt[key]; existing.IsZero() || (!at.IsZero() && at.Before(existing)) {
 			pub.trendFirstAt[key] = at
 		}
@@ -195,9 +190,9 @@ ORDER BY sig.observed_at`, since.UTC().Format(time.RFC3339Nano))
 	applyLead(channels)
 
 	return SourceAnalyticsReport{
-		Since: since.UTC(),
+		Since:      since.UTC(),
 		Publishers: finalizeContributions(publishers),
-		Channels: finalizeContributions(channels),
+		Channels:   finalizeContributions(channels),
 	}, nil
 }
 
