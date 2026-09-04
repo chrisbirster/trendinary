@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -26,6 +28,8 @@ import (
 
 const vapidPrivateKeyKV = "webpush-vapid-p256-private-v1"
 const vapidSubject = "mailto:alerts@trendinary.com"
+
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
 
 type PushSender struct {
 	store      *Store
@@ -41,6 +45,50 @@ type pushPayload struct {
 	Tag   string `json:"tag"`
 }
 
+func blockedPushIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
+		addr.IsMulticast() || addr.IsUnspecified() || cgnatPrefix.Contains(addr)
+}
+
+func defaultPushHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid push address: %w", err)
+		}
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve push endpoint: %w", err)
+		}
+		if len(ips) == 0 {
+			return nil, errors.New("push endpoint resolved to no addresses")
+		}
+		for _, ip := range ips {
+			if blockedPushIP(ip) {
+				return nil, errors.New("push endpoint resolved to a non-public address")
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   12 * time.Second,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= 4 {
+				return errors.New("too many Web Push redirects")
+			}
+			return nil
+		},
+	}
+}
+
 func NewPushSender(ctx context.Context, store *Store, client *http.Client) (*PushSender, error) {
 	if store == nil {
 		return nil, errors.New("following store is required")
@@ -50,7 +98,7 @@ func NewPushSender(ctx context.Context, store *Store, client *http.Client) (*Pus
 		return nil, err
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 12 * time.Second}
+		client = defaultPushHTTPClient()
 	}
 	key, err := ecdsaPrivateKey(privateKey)
 	if err != nil {
@@ -184,8 +232,11 @@ func encryptWebPush(payload []byte, receiverPublic, authSecret []byte) ([]byte, 
 
 func vapidAuthorization(endpoint string, privateRaw []byte, publicEncoded string, now time.Time) (string, error) {
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return "", errors.New("invalid Web Push endpoint")
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return "", errors.New("Web Push endpoint must use HTTPS port 443")
 	}
 	audience := parsed.Scheme + "://" + parsed.Host
 	headerJSON, _ := json.Marshal(map[string]string{"typ": "JWT", "alg": "ES256"})
