@@ -78,6 +78,7 @@ class FollowingAPIError extends Error {
 
 let memoryRadarKey = "";
 let storageUnavailable = false;
+let radarPromise: Promise<{ key: string; state: FollowingState }> | undefined;
 
 function storageGet(key: string) {
   if (storageUnavailable || typeof window === "undefined") return null;
@@ -174,7 +175,31 @@ async function migrateLegacyFollows(key: string) {
   }
 }
 
-export async function ensureRadar(): Promise<{ key: string; state: FollowingState }> {
+async function existingPushSubscription() {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) return undefined;
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  return registration?.pushManager.getSubscription();
+}
+
+async function bindSubscriptionToRadar(key: string, subscription: PushSubscription) {
+  const serialized = subscription.toJSON();
+  if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys.auth) return;
+  await request<Envelope<{ id: string }>>(
+    "/api/v1/following/push/subscription",
+    {
+      method: "PUT",
+      body: JSON.stringify({ endpoint: serialized.endpoint, p256dh: serialized.keys.p256dh, auth: serialized.keys.auth }),
+    },
+    key,
+  );
+}
+
+async function rebindExistingPush(key: string) {
+  const subscription = await existingPushSubscription();
+  if (subscription) await bindSubscriptionToRadar(key, subscription);
+}
+
+async function ensureRadarInternal(): Promise<{ key: string; state: FollowingState }> {
   let key = radarKey();
   if (key) {
     try {
@@ -194,6 +219,15 @@ export async function ensureRadar(): Promise<{ key: string; state: FollowingStat
   return { key, state: await stateForKey(key) };
 }
 
+export function ensureRadar(): Promise<{ key: string; state: FollowingState }> {
+  if (!radarPromise) {
+    radarPromise = ensureRadarInternal().finally(() => {
+      radarPromise = undefined;
+    });
+  }
+  return radarPromise;
+}
+
 export async function loadFollowingState(): Promise<FollowingState> {
   return (await ensureRadar()).state;
 }
@@ -206,14 +240,18 @@ export async function importRadarKey(value: string): Promise<FollowingState> {
   const key = value.trim();
   if (!key) throw new Error("Radar Key is required.");
   const state = await stateForKey(key);
+  radarPromise = undefined;
   rememberRadarKey(key);
+  await rebindExistingPush(key);
   return state;
 }
 
 export async function startFreshRadar(): Promise<FollowingState> {
+  radarPromise = undefined;
   memoryRadarKey = "";
   storageRemove(RADAR_KEY_STORAGE);
   const created = await createRadar();
+  await rebindExistingPush(created.sync_key);
   return created.state;
 }
 
@@ -272,8 +310,18 @@ export async function clearFollowingAlerts(): Promise<FollowingState> {
 
 export async function refreshFollowing(): Promise<FollowingState> {
   const { key } = await ensureRadar();
-  await request<Envelope<FollowingState>>("/api/v1/following/check", { method: "POST" }, key);
-  return stateForKey(key);
+  return (await request<Envelope<FollowingState>>("/api/v1/following/check", { method: "POST" }, key)).data;
+}
+
+export async function deleteCurrentRadar(): Promise<FollowingState> {
+  const { key } = await ensureRadar();
+  await request<void>("/api/v1/following/radar", { method: "DELETE" }, key);
+  radarPromise = undefined;
+  memoryRadarKey = "";
+  storageRemove(RADAR_KEY_STORAGE);
+  const created = await createRadar();
+  await rebindExistingPush(created.sync_key);
+  return created.state;
 }
 
 export function startFollowingMonitor(onUpdate: (state: FollowingState) => void, intervalMs = 60_000) {
@@ -316,9 +364,7 @@ export type PushState = "enabled" | "disabled" | "denied" | "unsupported";
 export async function webPushState(): Promise<PushState> {
   if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") return "unsupported";
   if (Notification.permission === "denied") return "denied";
-  const registration = await navigator.serviceWorker.getRegistration("/");
-  if (!registration) return "disabled";
-  return (await registration.pushManager.getSubscription()) ? "enabled" : "disabled";
+  return (await existingPushSubscription()) ? "enabled" : "disabled";
 }
 
 export async function enableWebPush(): Promise<PushState> {
@@ -337,23 +383,13 @@ export async function enableWebPush(): Promise<PushState> {
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
   }
-  const serialized = subscription.toJSON();
-  if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys.auth) throw new Error("Browser returned an incomplete push subscription.");
-  await request<Envelope<{ id: string }>>(
-    "/api/v1/following/push/subscription",
-    {
-      method: "PUT",
-      body: JSON.stringify({ endpoint: serialized.endpoint, p256dh: serialized.keys.p256dh, auth: serialized.keys.auth }),
-    },
-    key,
-  );
+  await bindSubscriptionToRadar(key, subscription);
   return "enabled";
 }
 
 export async function disableWebPush(): Promise<PushState> {
   if (typeof window === "undefined" || !("serviceWorker" in navigator)) return "unsupported";
-  const registration = await navigator.serviceWorker.getRegistration("/");
-  const subscription = await registration?.pushManager.getSubscription();
+  const subscription = await existingPushSubscription();
   if (!subscription) return "disabled";
   const { key } = await ensureRadar();
   try {
