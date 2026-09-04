@@ -57,6 +57,10 @@ func blockedPushIP(ip net.IP) bool {
 
 func defaultPushHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Push endpoints are untrusted browser-provided URLs. Do not honor proxy
+	// environment variables: every outbound connection must pass the resolver
+	// and public-address check below, including redirected requests.
+	transport.Proxy = nil
 	dialer := &net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
@@ -234,9 +238,6 @@ func vapidAuthorization(endpoint string, privateRaw []byte, publicEncoded string
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return "", errors.New("invalid Web Push endpoint")
-	}
-	if port := parsed.Port(); port != "" && port != "443" {
-		return "", errors.New("Web Push endpoint must use HTTPS port 443")
 	}
 	audience := parsed.Scheme + "://" + parsed.Host
 	headerJSON, _ := json.Marshal(map[string]string{"typ": "JWT", "alg": "ES256"})
