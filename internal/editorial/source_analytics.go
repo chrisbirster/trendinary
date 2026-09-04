@@ -51,6 +51,9 @@ func (s *Store) SourceAnalytics(ctx context.Context, since time.Time) (SourceAna
 	if s == nil || s.db == nil {
 		return SourceAnalyticsReport{}, fmt.Errorf("editorial store is unavailable")
 	}
+	if err := s.ensureSourceAnalyticsMembershipSchema(ctx); err != nil {
+		return SourceAnalyticsReport{}, err
+	}
 	if since.IsZero() {
 		since = time.Now().UTC().Add(-7 * 24 * time.Hour)
 	}
@@ -194,6 +197,55 @@ ORDER BY m.observed_at`, since.UTC().Format(time.RFC3339Nano))
 		Publishers: finalizeContributions(publishers),
 		Channels:   finalizeContributions(channels),
 	}, nil
+}
+
+// Keep the analytics endpoint safe even if it is called before the scanner has
+// ever persisted a trend membership after deployment. This mirrors the additive
+// history migration and is intentionally idempotent under rolling Fly starts.
+func (s *Store) ensureSourceAnalyticsMembershipSchema(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS trend_signal_memberships (
+  trend_key TEXT NOT NULL,
+  signal_id TEXT NOT NULL,
+  first_observed_at TEXT NOT NULL DEFAULT '',
+  observed_at TEXT NOT NULL,
+  PRIMARY KEY (trend_key, signal_id)
+)`); err != nil {
+		return fmt.Errorf("ensure source analytics memberships: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(trend_signal_memberships)`)
+	if err != nil {
+		return fmt.Errorf("inspect source analytics memberships: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "first_observed_at" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !found {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE trend_signal_memberships ADD COLUMN first_observed_at TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("add source analytics first observation: %w", err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE trend_signal_memberships SET first_observed_at = observed_at WHERE first_observed_at = ''`); err != nil {
+		return fmt.Errorf("backfill source analytics first observation: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) firstBreakingByTrend(ctx context.Context, since time.Time) (map[string]time.Time, error) {
