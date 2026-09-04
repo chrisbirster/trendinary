@@ -78,7 +78,7 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 		} else {
 			server.followingPush = push
 			server.following = following.NewService(radarStore, s, push)
-			go runFollowingWorker(server.following)
+			go runFollowingWorker(server.following, server.runtime)
 		}
 	}
 	mux := http.NewServeMux()
@@ -113,10 +113,17 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	return withHeaders(mux)
 }
 
-func runFollowingWorker(service *following.Service) {
+func runFollowingWorker(service *following.Service, status *runtimeinfo.Status) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
+		// Memory starts with demo/sample trends so the static app and focused
+		// handler tests remain useful before ingestion. Never let those values
+		// become durable radar baselines after a production restart: Following
+		// stays dormant until the scanner has successfully published real data.
+		if status == nil || status.Snapshot().Scanner.LastSuccessAt.IsZero() {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		result, err := service.Evaluate(ctx)
 		cancel()
