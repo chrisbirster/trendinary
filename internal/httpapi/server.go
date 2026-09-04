@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/following"
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
@@ -18,13 +19,15 @@ import (
 )
 
 type Server struct {
-	store    *store.Memory
-	frontend http.Handler
-	hn       *hackernews.Client
-	bluesky  *bluesky.Client
-	history  *history.Store
-	runtime  *runtimeinfo.Status
-	recent   *recent.Store
+	store         *store.Memory
+	frontend      http.Handler
+	hn            *hackernews.Client
+	bluesky       *bluesky.Client
+	history       *history.Store
+	runtime       *runtimeinfo.Status
+	recent        *recent.Store
+	following     *following.Service
+	followingPush *following.PushSender
 }
 
 type Option func(*Server)
@@ -39,6 +42,13 @@ func WithRuntime(status *runtimeinfo.Status, recentSignals *recent.Store) Option
 	return func(server *Server) {
 		server.runtime = status
 		server.recent = recentSignals
+	}
+}
+
+func WithFollowing(service *following.Service, push *following.PushSender) Option {
+	return func(server *Server) {
+		server.following = service
+		server.followingPush = push
 	}
 }
 
@@ -60,6 +70,16 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/peep", server.peep)
 	mux.HandleFunc("GET /api/v1/fomo", server.fomo)
+	mux.HandleFunc("POST /api/v1/following/radar", server.createFollowingRadar)
+	mux.HandleFunc("GET /api/v1/following/state", server.followingState)
+	mux.HandleFunc("POST /api/v1/following/follows", server.addFollowingFollow)
+	mux.HandleFunc("DELETE /api/v1/following/follows/{id}", server.removeFollowingFollow)
+	mux.HandleFunc("PATCH /api/v1/following/preferences", server.updateFollowingPreferences)
+	mux.HandleFunc("POST /api/v1/following/alerts/read", server.markFollowingRead)
+	mux.HandleFunc("DELETE /api/v1/following/alerts", server.clearFollowingAlerts)
+	mux.HandleFunc("GET /api/v1/following/push/public-key", server.followingPushPublicKey)
+	mux.HandleFunc("PUT /api/v1/following/push/subscription", server.putFollowingPushSubscription)
+	mux.HandleFunc("DELETE /api/v1/following/push/subscription", server.deleteFollowingPushSubscription)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/propagation", server.trendPropagation)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/explanation", server.trendExplanation)
@@ -76,11 +96,13 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"service": "trendinary",
-		"version": "v1",
-		"time":    time.Now().UTC().Format(time.RFC3339),
-		"history": s.history != nil,
+		"ok":        true,
+		"service":   "trendinary",
+		"version":   "v1",
+		"time":      time.Now().UTC().Format(time.RFC3339),
+		"history":   s.history != nil,
+		"following": s.following != nil,
+		"web_push":  s.followingPush != nil && s.followingPush.PublicKey() != "",
 	})
 }
 
