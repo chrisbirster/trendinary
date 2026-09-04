@@ -185,7 +185,7 @@ export function AdminQualityPage() {
               <div {...sx(styles.why)}>Current cluster threshold {value().current_cluster_threshold.toFixed(2)} · public score gate {value().recommended_min_score}</div>
             </div>
             <div>
-              <div {...sx(styles.score)}>{value().ready && value().recommended_cluster_threshold !== undefined ? value().recommended_cluster_threshold.toFixed(2) : Math.round((value().labels / value().required_labels) * 100) + "%"}</div>
+              <div {...sx(styles.score)}>{value().ready ? (value().recommended_cluster_threshold?.toFixed(2) ?? "—") : Math.round((value().labels / value().required_labels) * 100) + "%"}</div>
               <div {...sx(styles.scoreLabel)}>{value().ready ? "replay threshold" : "labeling progress"}</div>
             </div>
           </article>
