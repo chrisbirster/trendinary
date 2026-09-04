@@ -206,14 +206,34 @@ func detectAlerts(follow Follow, trend model.Trend, previous Baseline, preferenc
 }
 
 func (s *Service) Evaluate(ctx context.Context) (Evaluation, error) {
-	var result Evaluation
 	if s == nil || s.store == nil || s.trends == nil {
-		return result, nil
+		return Evaluation{}, nil
 	}
 	radars, err := s.store.ListRadars(ctx)
 	if err != nil {
-		return result, err
+		return Evaluation{}, err
 	}
+	return s.evaluateRadars(ctx, radars)
+}
+
+func (s *Service) EvaluateRadar(ctx context.Context, radarID string) (Evaluation, error) {
+	if s == nil || s.store == nil || s.trends == nil {
+		return Evaluation{}, nil
+	}
+	radars, err := s.store.ListRadars(ctx)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	for _, radar := range radars {
+		if radar.ID == radarID {
+			return s.evaluateRadars(ctx, []Radar{radar})
+		}
+	}
+	return Evaluation{}, ErrRadarNotFound
+}
+
+func (s *Service) evaluateRadars(ctx context.Context, radars []Radar) (Evaluation, error) {
+	var result Evaluation
 	trends := s.trends.Trends()
 	now := time.Now().UTC()
 	result.Radars = len(radars)
