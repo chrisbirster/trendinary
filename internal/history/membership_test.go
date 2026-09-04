@@ -47,3 +47,44 @@ func TestTrendSignalsReturnsRecentPersistedEvidence(t *testing.T) {
 		t.Fatalf("discovery channels were not restored: %+v", got)
 	}
 }
+
+func TestTrendMembershipRefreshPreservesFirstObservation(t *testing.T) {
+	ctx := context.Background()
+	store, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	first := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	last := first.Add(90 * time.Minute)
+	signal := model.Signal{ID: "wired:audacity", Source: model.Source{Name: "WIRED", Domain: "wired.com"}, DiscoveryChannel: "rss", Title: "Audacity 4.0"}
+	if err := store.RecordSignals(ctx, []model.Signal{signal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTrendSignals(ctx, "trend-audacity", []model.Signal{signal}, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTrendSignals(ctx, "trend-audacity", []model.Signal{signal}, last); err != nil {
+		t.Fatal(err)
+	}
+
+	var firstRaw, lastRaw string
+	if err := store.DB().QueryRowContext(ctx, `
+SELECT first_observed_at, observed_at
+FROM trend_signal_memberships
+WHERE trend_key = ? AND signal_id = ?`, "trend-audacity", signal.ID).Scan(&firstRaw, &lastRaw); err != nil {
+		t.Fatal(err)
+	}
+	firstGot, err := time.Parse(time.RFC3339Nano, firstRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastGot, err := time.Parse(time.RFC3339Nano, lastRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !firstGot.Equal(first) || !lastGot.Equal(last) {
+		t.Fatalf("membership first=%s last=%s, want %s / %s", firstGot, lastGot, first, last)
+	}
+}

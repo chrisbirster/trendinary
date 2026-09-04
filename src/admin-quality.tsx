@@ -12,6 +12,7 @@ import {
   type QualityReport,
   type ReplayReport,
 } from "./quality-api";
+import { fetchCalibrationV1, type CalibrationV1 } from "./source-intelligence-api";
 
 const sx = stylex.attrs;
 
@@ -147,18 +148,20 @@ export function AdminQualityPage() {
   const [feedback, setFeedback] = createSignal<QualityFeedback[]>([]);
   const [report, setReport] = createSignal<QualityReport>();
   const [replay, setReplay] = createSignal<ReplayReport>();
+  const [calibration, setCalibration] = createSignal<CalibrationV1>();
   const [error, setError] = createSignal<string>();
   const [loading, setLoading] = createSignal(true);
 
   const load = () => {
     setLoading(true);
     setError(undefined);
-    void Promise.all([fetchTrends(), fetchQualityFeedback(), fetchQualityReport(), fetchQualityReplay()])
-      .then(([trendValues, feedbackValues, reportValue, replayValue]) => {
+    void Promise.all([fetchTrends(), fetchQualityFeedback(), fetchQualityReport(), fetchQualityReplay(), fetchCalibrationV1()])
+      .then(([trendValues, feedbackValues, reportValue, replayValue, calibrationValue]) => {
         setTrends(trendValues);
         setFeedback(feedbackValues);
         setReport(reportValue);
         setReplay(replayValue);
+        setCalibration(calibrationValue);
       })
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
@@ -166,14 +169,32 @@ export function AdminQualityPage() {
   load();
 
   const latestFor = (trend: Trend) => feedback().find((value) => value.trend_key === (trend.id ?? trend.slug));
+  const labelQueue = () => [...trends()].sort((left, right) => Number(Boolean(latestFor(left))) - Number(Boolean(latestFor(right))));
+  const unlabeledLive = () => trends().filter((trend) => !latestFor(trend)).length;
 
   return (
     <QualityShell>
       <Show when={error()}>{(value) => <div {...sx(styles.why)}>{value()}</div>}</Show>
+      <Show when={calibration()}>
+        {(value) => (
+          <article {...sx(styles.card)}>
+            <div>
+              <div {...sx(styles.meta)}>CALIBRATION V1 · {value().labels}/{value().required_labels} DISTINCT HUMAN-LABELED TRENDS</div>
+              <h2 {...sx(styles.headline)}>{value().ready ? "Replay calibration is ready." : "Keep labeling before tuning production."}</h2>
+              <p {...sx(styles.description)}>{value().note}</p>
+              <div {...sx(styles.why)}>Current cluster threshold {value().current_cluster_threshold.toFixed(2)} · public score gate {value().recommended_min_score}</div>
+            </div>
+            <div>
+              <div {...sx(styles.score)}>{value().ready ? (value().recommended_cluster_threshold?.toFixed(2) ?? "—") : Math.round((value().labels / value().required_labels) * 100) + "%"}</div>
+              <div {...sx(styles.scoreLabel)}>{value().ready ? "replay threshold" : "labeling progress"}</div>
+            </div>
+          </article>
+        )}
+      </Show>
       <Show when={report()}>
         {(value) => (
           <>
-            <div {...sx(styles.meta)}>{value().labels} stable trends labeled · recommended public gate {value().recommended_min_score}</div>
+            <div {...sx(styles.meta)}>{value().labels} stable trends labeled · {unlabeledLive()} currently published trends still need a label · recommended public gate {value().recommended_min_score}</div>
             <Metric label="Top 10 precision" value={measuredPercent(value().top_10_precision, value().top_10_evaluated)} copy={`${value().top_10_evaluated} scored, precision-eligible labels in the highest-ranked sample.`} />
             <Metric label="Top 25 precision" value={measuredPercent(value().top_25_precision, value().top_25_evaluated)} copy={`${value().top_25_evaluated} scored, precision-eligible labels in the highest-ranked sample.`} />
             <Metric label="Precision proxy" value={percent(value().precision_proxy)} copy="Usable trend labels divided by usable + noise/duplicate/bad-cluster labels." />
@@ -195,7 +216,7 @@ export function AdminQualityPage() {
             <div>
               <div {...sx(styles.meta)}>DETERMINISTIC REPLAY · {value().corpus || "human corpus warming up"}</div>
               <h2 {...sx(styles.headline)}>Cluster benchmark</h2>
-              <p {...sx(styles.description)}>The same persisted signals that formed labeled production trends are replayed through the entity-aware clusterer at threshold 0.56.</p>
+              <p {...sx(styles.description)}>The same persisted signals that formed labeled production trends are replayed through the entity-aware clusterer at the current comparison threshold.</p>
               <div {...sx(styles.why)}>{value().signals} signals · {value().expected_pairs} expected pairs · {value().predicted_pairs} predicted pairs</div>
             </div>
             <div><div {...sx(styles.score)}>{value().signals ? percent(value().precision) : "—"}</div><div {...sx(styles.scoreLabel)}>replay precision</div></div>
@@ -203,11 +224,11 @@ export function AdminQualityPage() {
         )}
       </Show>
       <div {...sx(styles.topbar)}>
-        <div><div {...sx(styles.eyebrow)}>Live calibration queue</div><h2 {...sx(styles.headline)}>Label what the detector is publishing.</h2></div>
+        <div><div {...sx(styles.eyebrow)}>Live calibration queue · unlabeled first</div><h2 {...sx(styles.headline)}>Label what the detector is publishing.</h2></div>
         <button {...sx(styles.button)} disabled={loading()} onClick={load}>{loading() ? "Refreshing…" : "Refresh"}</button>
       </div>
       <Show when={!loading()} fallback={<div {...sx(styles.why)}>Loading live Trendinary output…</div>}>
-        <For each={trends()}>{(trend) => <TrendLabelCard trend={trend} latest={latestFor(trend)} onLabeled={load} />}</For>
+        <For each={labelQueue()}>{(trend) => <TrendLabelCard trend={trend} latest={latestFor(trend)} onLabeled={load} />}</For>
       </Show>
     </QualityShell>
   );

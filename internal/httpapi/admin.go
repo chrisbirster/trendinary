@@ -43,6 +43,7 @@ func (s *adminServer) routes(){
 	s.mux.HandleFunc("PATCH /api/v1/admin/content/{id}/state",s.state)
 	s.mux.HandleFunc("PUT /api/v1/admin/content/{id}/note",s.note)
 	s.mux.HandleFunc("GET /api/v1/admin/sources",s.sources)
+	s.mux.HandleFunc("GET /api/v1/admin/sources/analytics",s.sourceAnalytics)
 	s.mux.HandleFunc("PATCH /api/v1/admin/sources/{source}",s.sourceState)
 	s.mux.HandleFunc("POST /api/v1/admin/sources/{source}/ingest",s.ingest)
 	s.mux.HandleFunc("GET /api/v1/admin/sources/{source}/runs",s.runs)
@@ -57,6 +58,7 @@ func (s *adminServer) routes(){
 	s.mux.HandleFunc("POST /api/v1/admin/quality/trends/{slug}/feedback",s.putQualityFeedback)
 	s.mux.HandleFunc("GET /api/v1/admin/quality/report",s.qualityReport)
 	s.mux.HandleFunc("GET /api/v1/admin/quality/replay",s.qualityReplay)
+	s.mux.HandleFunc("GET /api/v1/admin/quality/calibration",s.calibrationV1)
 }
 
 func (s *adminServer) authorized(w http.ResponseWriter,r *http.Request)bool{

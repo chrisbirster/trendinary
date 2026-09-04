@@ -11,20 +11,27 @@ import (
 
 // SourceStatus is the operational view of one public discovery adapter.
 type SourceStatus struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Kind          string        `json:"kind"`
-	Policy        string        `json:"policy,omitempty"`
-	URL           string        `json:"url,omitempty"`
-	TermsURL      string        `json:"terms_url,omitempty"`
-	Enabled       bool          `json:"enabled"`
-	Cadence       time.Duration `json:"cadence"`
-	LastAttemptAt time.Time     `json:"last_attempt_at,omitempty"`
-	LastSuccessAt time.Time     `json:"last_success_at,omitempty"`
-	NextRunAt     time.Time     `json:"next_run_at,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
-	Failures      int           `json:"failures"`
-	CachedSignals int           `json:"cached_signals"`
+	ID              string        `json:"id"`
+	Name            string        `json:"name"`
+	Kind            string        `json:"kind"`
+	Policy          string        `json:"policy,omitempty"`
+	URL             string        `json:"url,omitempty"`
+	TermsURL        string        `json:"terms_url,omitempty"`
+	Enabled         bool          `json:"enabled"`
+	Cadence         time.Duration `json:"cadence"`
+	LastAttemptAt   time.Time     `json:"last_attempt_at,omitempty"`
+	LastSuccessAt   time.Time     `json:"last_success_at,omitempty"`
+	NextRunAt       time.Time     `json:"next_run_at,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	Failures        int           `json:"failures"`
+	CachedSignals   int           `json:"cached_signals"`
+	Attempts        int64         `json:"attempts"`
+	Successes       int64         `json:"successes"`
+	SignalsProduced int64         `json:"signals_produced"`
+	LastDuration    time.Duration `json:"last_duration"`
+	AverageDuration time.Duration `json:"average_duration"`
+	HTTPRequests    int64         `json:"http_requests"`
+	NotModified     int64         `json:"not_modified"`
 }
 
 type SourceMetadata struct {
@@ -42,19 +49,30 @@ type SourceStatusProvider interface {
 	SourceStatus() SourceStatus
 }
 
+// requestDiagnosticsProvider is intentionally structural so ingest packages do
+// not need to depend on the scanner package merely to report HTTP cache usage.
+type requestDiagnosticsProvider interface {
+	RequestDiagnostics() (requests int64, notModified int64)
+}
+
 // ScheduledSource lets the scanner keep its fast global tick while respecting
 // source-specific polling limits. Between polls it returns the last good batch.
 type ScheduledSource struct {
-	mu       sync.Mutex
-	source   DiscoverySource
-	meta     SourceMetadata
-	now      func() time.Time
-	cached   []model.Signal
-	attempt  time.Time
-	success  time.Time
-	next     time.Time
-	lastErr  string
-	failures int
+	mu              sync.Mutex
+	source          DiscoverySource
+	meta            SourceMetadata
+	now             func() time.Time
+	cached          []model.Signal
+	attempt         time.Time
+	success         time.Time
+	next            time.Time
+	lastErr         string
+	failures        int
+	attempts        int64
+	successes       int64
+	signalsProduced int64
+	lastDuration    time.Duration
+	totalDuration   time.Duration
 }
 
 func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledSource {
@@ -89,12 +107,17 @@ func (s *ScheduledSource) Discover(ctx context.Context) ([]model.Signal, error) 
 		return cached, nil
 	}
 	s.attempt = now
+	s.attempts++
 	s.mu.Unlock()
 
+	started := time.Now()
 	values, err := s.source.Discover(ctx)
+	duration := time.Since(started)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastDuration = duration
+	s.totalDuration += duration
 	if err != nil {
 		s.failures++
 		s.lastErr = err.Error()
@@ -110,6 +133,8 @@ func (s *ScheduledSource) Discover(ctx context.Context) ([]model.Signal, error) 
 	}
 	s.cached = cloneScheduledSignals(values)
 	s.success = now
+	s.successes++
+	s.signalsProduced += int64(len(values))
 	s.lastErr = ""
 	s.failures = 0
 	s.next = now.Add(s.meta.Cadence + sourceJitter(s.meta.ID, s.meta.Cadence))
@@ -122,11 +147,21 @@ func (s *ScheduledSource) SourceStatus() SourceStatus {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	average := time.Duration(0)
+	if s.attempts > 0 {
+		average = time.Duration(int64(s.totalDuration) / s.attempts)
+	}
+	var requests, notModified int64
+	if provider, ok := s.source.(requestDiagnosticsProvider); ok {
+		requests, notModified = provider.RequestDiagnostics()
+	}
 	return SourceStatus{
 		ID: s.meta.ID, Name: s.meta.Name, Kind: s.meta.Kind, Policy: s.meta.Policy,
 		URL: s.meta.URL, TermsURL: s.meta.TermsURL, Enabled: s.source != nil,
 		Cadence: s.meta.Cadence, LastAttemptAt: s.attempt, LastSuccessAt: s.success,
 		NextRunAt: s.next, LastError: s.lastErr, Failures: s.failures, CachedSignals: len(s.cached),
+		Attempts: s.attempts, Successes: s.successes, SignalsProduced: s.signalsProduced,
+		LastDuration: s.lastDuration, AverageDuration: average, HTTPRequests: requests, NotModified: notModified,
 	}
 }
 
