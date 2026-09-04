@@ -215,6 +215,11 @@ async function ensureRadarInternal(): Promise<{ key: string; state: FollowingSta
   }
   const created = await createRadar();
   key = created.sync_key;
+  // A browser may still hold a valid PushManager subscription after the old
+  // server radar was deleted from another device. Move that endpoint to the
+  // replacement radar before returning so UI state cannot say "push enabled"
+  // while the server has no subscription for the new Radar Key.
+  await rebindExistingPush(key);
   await migrateLegacyFollows(key);
   return { key, state: await stateForKey(key) };
 }
