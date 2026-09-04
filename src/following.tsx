@@ -4,7 +4,6 @@ import { fetchTrend, fetchTrends, type Trend } from "./api";
 import {
   clearFollowingAlerts,
   followTrend,
-  isFollowing,
   loadFollowingState,
   markFollowingAlertsRead,
   refreshFollowing,
@@ -55,6 +54,8 @@ export function FollowingPage() {
   const [permission, setPermission] = createSignal(notificationStatus());
   const [refreshing, setRefreshing] = createSignal(false);
 
+  const isFollowed = (slug: string) => state().follows.some((follow) => follow.slug === slug);
+
   const loadTrends = async () => {
     try {
       setTrends(await fetchTrends());
@@ -67,7 +68,7 @@ export function FollowingPage() {
 
   const bootstrapQueryFollow = async () => {
     const slug = new URLSearchParams(window.location.search).get("follow")?.trim();
-    if (!slug || isFollowing(slug)) return;
+    if (!slug || isFollowed(slug)) return;
     try {
       const trend = await fetchTrend(slug);
       setState(followTrend(trend));
@@ -83,7 +84,7 @@ export function FollowingPage() {
   onCleanup(stopMonitor);
 
   const toggle = (trend: Trend) => {
-    setState(isFollowing(trend.slug) ? unfollowTrend(trend.slug) : followTrend(trend));
+    setState(isFollowed(trend.slug) ? unfollowTrend(trend.slug) : followTrend(trend));
   };
 
   const remove = (slug: string) => setState(unfollowTrend(slug));
@@ -175,7 +176,7 @@ export function FollowingPage() {
             <For each={trends()}>{(trend) => (
               <article {...sx(styles.card)}>
                 <div><div {...sx(styles.cardKicker)}>{trend.status} · SCORE {trend.score}</div><h3 {...sx(styles.cardTitle)}>{trend.name}</h3><p {...sx(styles.cardCopy)}>{trend.reason}</p></div>
-                <div {...sx(styles.chips)}><a {...sx(styles.chip)} href={`/trend/${trend.slug}`}>Details</a><button {...sx(styles.followButton)} type="button" onClick={() => toggle(trend)}>{isFollowing(trend.slug) ? "Following ✓" : "Follow"}</button></div>
+                <div {...sx(styles.chips)}><a {...sx(styles.chip)} href={`/trend/${trend.slug}`}>Details</a><button {...sx(styles.followButton)} type="button" onClick={() => toggle(trend)}>{isFollowed(trend.slug) ? "Following ✓" : "Follow"}</button></div>
               </article>
             )}</For>
           </div>
