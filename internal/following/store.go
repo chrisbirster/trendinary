@@ -397,12 +397,12 @@ func (s *Store) ListRadars(ctx context.Context) ([]Radar, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []Radar{}
 	for rows.Next() {
 		var radar Radar
 		var lifecycle, velocity, corroboration, resurfacing int
 		if err := rows.Scan(&radar.ID, &radar.Preferences.Sensitivity, &lifecycle, &velocity, &corroboration, &resurfacing); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		radar.Preferences.Sensitivity = normalizeSensitivity(radar.Preferences.Sensitivity)
@@ -410,13 +410,26 @@ func (s *Store) ListRadars(ctx context.Context) ([]Radar, error) {
 		radar.Preferences.Velocity = velocity != 0
 		radar.Preferences.Corroboration = corroboration != 0
 		radar.Preferences.Resurfacing = resurfacing != 0
-		radar.Follows, err = s.Follows(ctx, radar.ID)
+		out = append(out, radar)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	// Finish the outer query before reading each radar's follows. This keeps
+	// evaluation correct even when the SQL pool is intentionally constrained to
+	// one connection (as in SQLite tests) and avoids unnecessary nested reads in
+	// production libSQL pools.
+	for index := range out {
+		out[index].Follows, err = s.Follows(ctx, out[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, radar)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) Baseline(ctx context.Context, followID, trendKey string) (Baseline, bool, error) {
