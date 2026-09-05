@@ -267,6 +267,12 @@ func (s *Service) evaluateRadars(ctx context.Context, radars []Radar) (Evaluatio
 				}
 
 				for _, candidate := range detectAlerts(follow, trend, previous, radar.Preferences, now) {
+					// Persist the trigger evidence before claiming the fingerprint. This is
+					// safe under concurrent evaluators because every worker computes the
+					// same alert ID/context for the same baseline transition.
+					if err := s.store.PutAlertContext(ctx, radar.ID, candidate.alert.ID, alertContextFrom(previous, trend, now)); err != nil {
+						return result, err
+					}
 					inserted, err := s.store.InsertAlert(ctx, radar.ID, candidate.fingerprint, candidate.alert)
 					if err != nil {
 						return result, err
@@ -275,10 +281,13 @@ func (s *Service) evaluateRadars(ctx context.Context, radars []Radar) (Evaluatio
 						continue
 					}
 					result.Alerts++
+					attempts := 0
+					var pushErr error
 					if s.push != nil {
-						attempts, _ := s.push.SendAlert(ctx, radar.ID, candidate.alert)
+						attempts, pushErr = s.push.SendAlert(ctx, radar.ID, candidate.alert)
 						result.PushAttempts += attempts
 					}
+					s.store.RecordAlertDelivery(ctx, radar.ID, candidate.alert.ID, attempts, pushErr)
 				}
 				if err := s.store.PutBaseline(ctx, current); err != nil {
 					return result, err
