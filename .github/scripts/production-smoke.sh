@@ -22,8 +22,9 @@ check_json() {
   jq -c . "$output"
 }
 
-check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .version == "v1"'
+check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .version == "v1" and .following == true and .web_push == true'
 check_json "/api/v1/health/streams" '.data | type == "object" and has("jetstream") and has("scanner") and has("window")'
 check_json "/api/v1/trends" '.data | type == "array"'
+check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
 echo "smoke: production API healthy"

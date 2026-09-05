@@ -1,36 +1,120 @@
 # Following and alerts
 
-Trendinary v0.4.0 starts Following as a **device-local abnormal-activity radar**.
+Trendinary v0.5.0 turns Following into a **server-backed abnormal-activity radar** that keeps evaluating when every browser is closed.
 
-## Privacy model
+## Privacy and cross-device identity
 
-The first version does not require an account, email address, or server-side user profile. Follows, baselines, and the alert inbox are stored in the browser under `trendinary.following.v1`.
+Following still does not require an account, email address, or server-side user profile. The identity boundary is an anonymous **Radar Key** generated from 32 random bytes.
 
-This means follows do not sync across devices yet. That is deliberate: cross-device identity should be added only when it provides enough value to justify an account boundary.
+- The browser receives and stores the Radar Key.
+- The server derives a SHA-256 radar ID from the decoded key and stores only that one-way identity.
+- The original Radar Key cannot be recovered from the Turso database.
+- Copying/importing the same Radar Key on another device gives that device access to the same follows, preferences, and alert inbox.
+- Anyone who obtains the Radar Key can control that radar, so it must be treated like a password.
+- `DELETE /api/v1/following/radar` deletes the radar's follows, baselines, alerts, and push subscriptions.
+
+A fresh v0.5 browser automatically migrates any v0.4 `trendinary.following.v1` exact-trend follows into the new server radar. The old local state is retained until migration succeeds so a temporary outage cannot destroy the user's only copy.
+
+## Durable state
+
+Turso/libSQL stores:
+
+- radar preferences,
+- exact trend follows,
+- recurring topic and entity follows,
+- per-follow/per-trend baselines,
+- deduplicated alert history,
+- Web Push subscriptions,
+- the server's VAPID private key.
+
+The VAPID private key is generated once inside Trendinary and persisted in Turso. It is not a new Fly secret and is never exposed by the public API. Only the corresponding public key is returned to browsers that subscribe to Web Push.
+
+## Follow kinds
+
+### Trend
+
+An exact trend follow tracks one stable trend slug/identity. Its first matched observation establishes the baseline.
+
+### Entity
+
+An entity follow matches current or future stable trends by trend name and aliases. This is intended for named things such as `OpenAI`, `Artemis`, or `Audacity`.
+
+### Topic
+
+A topic follow is broader. It matches trend category, name, reason, and aliases. This lets a subject such as `cybersecurity` remain followed even after today's individual trend cluster cools.
 
 ## What creates an alert
 
-Following compares the current trend against the last baseline observed by this browser. The initial baseline is captured when the user follows a trend, so already-existing popularity does not generate a fake notification.
+The first matched observation never generates an alert. It establishes the baseline. Later observations are compared against that durable baseline.
 
-An alert may be created when:
+Alert families are independently configurable:
 
 - **Lifecycle:** a trend advances into RISING, BREAKING, or PEAKING.
-- **Resurfacing:** a trend enters RESURFACING after previously being in another lifecycle state.
-- **Acceleration:** normalized velocity increases by at least 0.20 while reaching at least 0.55, or the Trendinary Score jumps by at least 15 points between observations.
-- **Corroboration:** evidence expands by at least two independent publisher/source identities, or normalized source breadth rises by at least 0.25 while at least two identities are present.
+- **Resurfacing:** a cooled subject returns as RESURFACING.
+- **Acceleration:** normalized velocity or Trendinary Score jumps meaningfully.
+- **Corroboration:** evidence expands across additional independent publisher identities/source breadth.
 
-Alerts are edge-triggered from baseline changes and also use fingerprints to suppress repeated notices for the same observed condition.
+The three sensitivity presets change the material-change thresholds:
 
-## Polling and browser notifications
+| Preset | Velocity floor | Velocity delta | Score delta | Publisher delta | Breadth delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Early | 0.45 | 0.12 | 10 | 1 | 0.15 |
+| Balanced | 0.55 | 0.20 | 15 | 2 | 0.25 |
+| Quiet | 0.70 | 0.25 | 20 | 3 | 0.35 |
 
-While Trendinary is open, the Following monitor checks once per minute and immediately checks again when a hidden tab becomes visible. The user can also choose **Check now**.
+Alerts are persisted with deterministic fingerprints. A unique insert is the concurrency boundary: if multiple Fly Machines evaluate the same radar, only the process that successfully inserts a new alert may attempt push delivery.
 
-A monitor pass fetches the live leaderboard once and reuses those results across every followed trend. It falls back to an individual trend-detail request only for a followed trend that is no longer present in the leaderboard, avoiding one network request per follow during normal operation.
+## Evaluation cadence
 
-The in-app alert inbox is the durable record for this version. If the user explicitly grants the browser Notification permission, Trendinary may show a browser notification when the page is open but hidden.
+Production evaluates every server-backed radar once per minute against the current published trend snapshot. Browser polling is no longer the alert engine; it only synchronizes the shared inbox and controls.
 
-v0.4.0 does **not** claim closed-browser push delivery. Reliable closed-browser delivery requires a Web Push/service-worker subscription or another delivery channel and should be implemented as a separate capability rather than implied by foreground polling.
+`POST /api/v1/following/check` performs an immediate evaluation for one authenticated radar. It is useful for the UI's **Sync now** action without scanning every user's radar.
+
+## Web Push
+
+If the user explicitly grants notification permission, Trendinary registers `/sw.js` and creates a standards-based Web Push subscription.
+
+The server implements:
+
+- P-256 ECDH,
+- the Web Push authentication-secret HKDF step,
+- `aes128gcm` content encryption,
+- VAPID ES256 authorization,
+- short push TTL,
+- automatic disabling of push endpoints that return HTTP 404 or 410.
+
+One browser push endpoint belongs to one Radar Key at a time. Importing a different Radar Key on a device rebinds the existing browser subscription so the old radar cannot continue pushing to that device.
+
+The service worker displays the notification and opens/focuses the matching Trendinary trend when clicked.
+
+## HTTP API
+
+Creating a radar is the only unauthenticated radar write:
+
+- `POST /api/v1/following/radar`
+
+All radar-private requests use:
+
+```text
+Authorization: Bearer <Radar Key>
+```
+
+Private endpoints use `Cache-Control: no-store`.
+
+The v0.5 API includes:
+
+- `GET /api/v1/following/state`
+- `POST /api/v1/following/check`
+- `DELETE /api/v1/following/radar`
+- `POST /api/v1/following/follows`
+- `DELETE /api/v1/following/follows/{id}`
+- `PATCH /api/v1/following/preferences`
+- `POST /api/v1/following/alerts/read`
+- `DELETE /api/v1/following/alerts`
+- `GET /api/v1/following/push/public-key`
+- `PUT /api/v1/following/push/subscription`
+- `DELETE /api/v1/following/push/subscription`
 
 ## Quiet is valid output
 
-Following is not an engagement feed. If none of the material-change rules fire, the correct result is silence. The UI explicitly treats a quiet radar as healthy output.
+Following is not an engagement feed. If none of the material-change rules fire, the correct result is silence. Server-backed operation does not change that product rule.
