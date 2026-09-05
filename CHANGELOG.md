@@ -4,6 +4,31 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-05
+
+### Added
+
+- Anonymous server-backed Radar Keys generated from 256 bits of entropy; only the SHA-256 radar identity is persisted server-side.
+- Durable Turso-backed follows, preferences, baselines, alert history, and Web Push subscriptions that sync across devices without an account or email address.
+- Exact-trend, recurring-topic, and recurring-entity follows, with automatic migration of v0.4 device-local trend follows after a server radar is created.
+- Server-side one-minute radar evaluation for lifecycle, resurfacing, acceleration, and independent-source corroboration changes even when every browser is closed.
+- Early, balanced, and quiet sensitivity presets plus independent alert-family controls.
+- Standards-based AES128GCM Web Push with a durable VAPID P-256 key, service-worker notification delivery, and click-through to the matching trend.
+- Cross-device Radar Key copy/import, explicit radar deletion, shared alert inbox, and immediate `Sync now` evaluation.
+- Release-gate regression coverage for successful encrypted push payloads, concurrent evaluator deduplication, hundreds-of-radars evaluation, and complete durable radar deletion.
+
+### Changed
+
+- Following is now a server-backed abnormal-attention radar rather than a browser-local foreground monitor; browser polling only synchronizes state while the server owns alert evaluation.
+- One browser push endpoint can belong to only one Radar Key at a time, so importing another radar rebinds the endpoint instead of allowing the old radar to continue pushing to that browser.
+- The first observation for a followed trend remains baseline-only and never creates a synthetic alert; later material changes are fingerprinted so concurrent Fly Machines cannot duplicate notifications.
+
+### Fixed
+
+- A browser that still has a valid PushManager subscription after its old server radar was deleted now rebinds that subscription automatically when a replacement radar is created.
+- Gone Web Push endpoints are disabled after HTTP 404/410 responses instead of being retried indefinitely.
+- Radar deletion removes follows, baselines, alerts, and push subscriptions so the anonymous credential has a complete server-side lifecycle.
+
 ## [0.4.0] - 2026-09-04
 
 ### Added
