@@ -1,13 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/following"
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/ingest/bluesky"
 	"github.com/chrisbirster/trendinary/internal/ingest/hackernews"
@@ -18,13 +21,15 @@ import (
 )
 
 type Server struct {
-	store    *store.Memory
-	frontend http.Handler
-	hn       *hackernews.Client
-	bluesky  *bluesky.Client
-	history  *history.Store
-	runtime  *runtimeinfo.Status
-	recent   *recent.Store
+	store         *store.Memory
+	frontend      http.Handler
+	hn            *hackernews.Client
+	bluesky       *bluesky.Client
+	history       *history.Store
+	runtime       *runtimeinfo.Status
+	recent        *recent.Store
+	following     *following.Service
+	followingPush *following.PushSender
 }
 
 type Option func(*Server)
@@ -42,6 +47,13 @@ func WithRuntime(status *runtimeinfo.Status, recentSignals *recent.Store) Option
 	}
 }
 
+func WithFollowing(service *following.Service, push *following.PushSender) Option {
+	return func(server *Server) {
+		server.following = service
+		server.followingPush = push
+	}
+}
+
 func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler {
 	server := &Server{
 		store:    s,
@@ -54,12 +66,39 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 			option(server)
 		}
 	}
+	// Production main supplies both durable history and runtime status. That is
+	// the boundary where v0.5's anonymous server-backed radar becomes active.
+	// Most focused handler tests omit runtime status, so they do not leak a
+	// minute ticker merely by constructing a server with a temporary history DB.
+	if server.following == nil && server.history != nil && server.runtime != nil {
+		if radarStore, err := following.NewStore(server.history.DB()); err != nil {
+			slog.Error("configure following store", "error", err)
+		} else if push, err := following.NewPushSender(context.Background(), radarStore, nil); err != nil {
+			slog.Error("configure following Web Push", "error", err)
+		} else {
+			server.followingPush = push
+			server.following = following.NewService(radarStore, s, push)
+			go runFollowingWorker(server.following, server.runtime)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
 	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/peep", server.peep)
 	mux.HandleFunc("GET /api/v1/fomo", server.fomo)
+	mux.HandleFunc("POST /api/v1/following/radar", server.createFollowingRadar)
+	mux.HandleFunc("DELETE /api/v1/following/radar", server.deleteFollowingRadar)
+	mux.HandleFunc("GET /api/v1/following/state", server.followingState)
+	mux.HandleFunc("POST /api/v1/following/check", server.checkFollowingRadar)
+	mux.HandleFunc("POST /api/v1/following/follows", server.addFollowingFollow)
+	mux.HandleFunc("DELETE /api/v1/following/follows/{id}", server.removeFollowingFollow)
+	mux.HandleFunc("PATCH /api/v1/following/preferences", server.updateFollowingPreferences)
+	mux.HandleFunc("POST /api/v1/following/alerts/read", server.markFollowingRead)
+	mux.HandleFunc("DELETE /api/v1/following/alerts", server.clearFollowingAlerts)
+	mux.HandleFunc("GET /api/v1/following/push/public-key", server.followingPushPublicKey)
+	mux.HandleFunc("PUT /api/v1/following/push/subscription", server.putFollowingPushSubscription)
+	mux.HandleFunc("DELETE /api/v1/following/push/subscription", server.deleteFollowingPushSubscription)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/history", server.trendHistory)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/propagation", server.trendPropagation)
 	mux.HandleFunc("GET /api/v1/trends/{slug}/explanation", server.trendExplanation)
@@ -74,13 +113,39 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	return withHeaders(mux)
 }
 
+func runFollowingWorker(service *following.Service, status *runtimeinfo.Status) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		// Memory starts with demo/sample trends so the static app and focused
+		// handler tests remain useful before ingestion. Never let those values
+		// become durable radar baselines after a production restart: Following
+		// stays dormant until the scanner has successfully published real data.
+		if status == nil || status.Snapshot().Scanner.LastSuccessAt.IsZero() {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		result, err := service.Evaluate(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("following evaluation failed", "error", err)
+			continue
+		}
+		if result.Alerts > 0 {
+			slog.Info("following alerts generated", "radars", result.Radars, "follows", result.Follows, "matches", result.Matches, "alerts", result.Alerts, "push_attempts", result.PushAttempts)
+		}
+	}
+}
+
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"service": "trendinary",
-		"version": "v1",
-		"time":    time.Now().UTC().Format(time.RFC3339),
-		"history": s.history != nil,
+		"ok":        true,
+		"service":   "trendinary",
+		"version":   "v1",
+		"time":      time.Now().UTC().Format(time.RFC3339),
+		"history":   s.history != nil,
+		"following": s.following != nil,
+		"web_push":  s.followingPush != nil && s.followingPush.PublicKey() != "",
 	})
 }
 
