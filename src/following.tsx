@@ -23,6 +23,16 @@ import {
   updateRadarPreferences,
   webPushState,
 } from "./following-store";
+import {
+  loadRadarBriefing,
+  loadRadarFeedback,
+  loadRadarQuality,
+  markRadarBriefingSeen,
+  rateRadarAlert,
+  type AlertFeedbackRating,
+  type RadarBriefing,
+  type RadarQuality,
+} from "./radar-intelligence";
 import { styles } from "./styles.stylex";
 
 const sx = stylex.attrs;
@@ -58,6 +68,19 @@ function maskedKey(value: string) {
   return `${value.slice(0, 8)}…${value.slice(-6)}`;
 }
 
+const emptyBriefing = (): RadarBriefing => ({ since: "", generated_at: "", quiet: true, items: [] });
+const emptyQuality = (): RadarQuality => ({
+  total_alerts: 0,
+  rated: 0,
+  useful: 0,
+  noise: 0,
+  too_late: 0,
+  useful_rate: 0,
+  push_attempts: 0,
+  delivered_alerts: 0,
+  failed_deliveries: 0,
+});
+
 export function FollowingPage() {
   const [state, setState] = createSignal(emptyFollowingState());
   const [trends, setTrends] = createSignal<Trend[]>([]);
@@ -70,20 +93,40 @@ export function FollowingPage() {
   const [topic, setTopic] = createSignal("");
   const [entity, setEntity] = createSignal("");
   const [copied, setCopied] = createSignal(false);
+  const [feedback, setFeedback] = createSignal<Record<string, AlertFeedbackRating>>({});
+  const [briefing, setBriefing] = createSignal<RadarBriefing>(emptyBriefing());
+  const [quality, setQuality] = createSignal<RadarQuality>(emptyQuality());
 
   const isFollowed = (slug: string) => state().follows.find((follow) => follow.kind === "trend" && follow.value === slug);
   const unread = () => state().alerts.filter((alert) => !alert.read).length;
 
+  const refreshIntelligence = async () => {
+    const [nextFeedback, nextBriefing, nextQuality] = await Promise.all([
+      loadRadarFeedback(),
+      loadRadarBriefing(),
+      loadRadarQuality(),
+    ]);
+    setFeedback(nextFeedback);
+    setBriefing(nextBriefing);
+    setQuality(nextQuality);
+  };
+
   const initialize = async () => {
     try {
-      const [nextState, live, pushState] = await Promise.all([
+      const [nextState, live, pushState, nextFeedback, nextBriefing, nextQuality] = await Promise.all([
         loadFollowingState(),
         fetchTrends(),
         webPushState(),
+        loadRadarFeedback(),
+        loadRadarBriefing(),
+        loadRadarQuality(),
       ]);
       setState(nextState);
       setTrends(live);
       setPush(pushState);
+      setFeedback(nextFeedback);
+      setBriefing(nextBriefing);
+      setQuality(nextQuality);
       setRadarKey(currentRadarKey());
       const slug = new URLSearchParams(window.location.search).get("follow")?.trim();
       if (slug && !nextState.follows.some((follow) => follow.kind === "trend" && follow.value === slug)) {
@@ -162,6 +205,7 @@ export function FollowingPage() {
       setImportKey("");
       setRadarKey(currentRadarKey());
       setPush(await webPushState());
+      await refreshIntelligence();
       return next;
     });
   };
@@ -171,6 +215,7 @@ export function FollowingPage() {
       const next = await startFreshRadar();
       setRadarKey(currentRadarKey());
       setPush(await webPushState());
+      await refreshIntelligence();
       return next;
     });
   };
@@ -188,7 +233,40 @@ export function FollowingPage() {
     }
   };
 
-  const refresh = () => void perform(() => refreshFollowing());
+  const refresh = () => void perform(async () => {
+    const next = await refreshFollowing();
+    await refreshIntelligence();
+    return next;
+  });
+
+  const rateAlert = async (alertID: string, rating: AlertFeedbackRating) => {
+    if (working()) return;
+    setWorking(true);
+    setError(undefined);
+    try {
+      const selected = await rateRadarAlert(alertID, rating);
+      setFeedback((current) => ({ ...current, [alertID]: selected }));
+      setQuality(await loadRadarQuality());
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const caughtUp = async () => {
+    if (working()) return;
+    setWorking(true);
+    setError(undefined);
+    try {
+      await markRadarBriefingSeen();
+      setBriefing(await loadRadarBriefing());
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
 
   return (
     <>
@@ -196,12 +274,13 @@ export function FollowingPage() {
         <div>
           <div {...sx(styles.eyebrow)}>FOLLOWING · CROSS-DEVICE RADAR</div>
           <h1 {...sx(styles.heroTitle)}>Tell me when <span {...sx(styles.heroAccent)}>something changes.</span></h1>
-          <p {...sx(styles.heroCopy)}>Trendinary now watches your radar on the server even when every browser is closed. No account or email is required: a private Radar Key syncs follows, alert settings, and the inbox across your devices.</p>
+          <p {...sx(styles.heroCopy)}>Trendinary watches your radar on the server even when every browser is closed. No account or email is required: a private Radar Key syncs follows, alert settings, the inbox, and your catch-up briefing across devices.</p>
         </div>
         <div {...sx(styles.statusCard)}>
           <div {...sx(styles.statusLabel)}>Radar status</div>
           <div {...sx(styles.statusValue)}>{state().follows.length ? `${state().follows.length} FOLLOWED` : "QUIET"}</div>
           <div {...sx(styles.statusSub)}>{unread()} unread · Web Push {push()} · {state().preferences.sensitivity} sensitivity</div>
+          <Show when={quality().rated > 0}><div {...sx(styles.statusSub)}>{Math.round(quality().useful_rate * 100)}% useful · {quality().rated} rated alerts</div></Show>
           <button {...sx(styles.followButton)} type="button" disabled={working() || push() === "unsupported" || push() === "denied"} onClick={() => void togglePush()}>
             {push() === "enabled" ? "Disable push" : push() === "denied" ? "Push blocked" : push() === "unsupported" ? "Push unsupported" : "Enable closed-browser push"}
           </button>
@@ -257,7 +336,39 @@ export function FollowingPage() {
 
       <section {...sx(styles.section)}>
         <div {...sx(styles.sectionHeader)}>
-          <div><h2 {...sx(styles.sectionTitle)}>Alert inbox</h2><p {...sx(styles.sectionCopy)}>This inbox is durable and shared by every device using the Radar Key. The server evaluates the radar once per minute even with no browser open.</p></div>
+          <div><h2 {...sx(styles.sectionTitle)}>What changed since I last looked?</h2><p {...sx(styles.sectionCopy)}>Only material changes in things you follow appear here. Your catch-up checkpoint is shared across devices.</p></div>
+          <Show when={!briefing().quiet}><button {...sx(styles.smallButton)} type="button" disabled={working()} onClick={() => void caughtUp()}>I’m caught up</button></Show>
+        </div>
+        <div {...sx(styles.grid3)}>
+          <article {...sx(styles.card)}>
+            <div {...sx(styles.cardKicker)}>ALERT QUALITY</div>
+            <h3 {...sx(styles.cardTitle)}>{quality().rated ? `${Math.round(quality().useful_rate * 100)}% useful` : "Awaiting feedback"}</h3>
+            <p {...sx(styles.cardCopy)}>{quality().rated} rated · {quality().useful} useful · {quality().noise} noise · {quality().too_late} too late.</p>
+            <p {...sx(styles.cardCopy)}>{quality().delivered_alerts} push deliveries · {quality().failed_deliveries} failed deliveries.</p>
+          </article>
+          <Show when={!briefing().quiet} fallback={<article {...sx(styles.card)}><div {...sx(styles.cardKicker)}>QUIET RADAR</div><h3 {...sx(styles.cardTitle)}>Nothing material changed.</h3><p {...sx(styles.cardCopy)}>Silence is a successful result when your followed topics have not crossed an alert threshold.</p></article>}>
+            <For each={briefing().items}>{(item) => (
+              <article {...sx(styles.card)}>
+                <div {...sx(styles.cardKicker)}>{item.kinds.join(" · ").toUpperCase()} · {relativeTime(item.latest_at)}</div>
+                <h3 {...sx(styles.cardTitle)}>{item.name}</h3>
+                <For each={item.changes}>{(change) => <p {...sx(styles.cardCopy)}>{change}</p>}</For>
+                <Show when={item.latest_context}>{(context) => (
+                  <div {...sx(styles.chips)}>
+                    <span {...sx(styles.chip)}>Score {context().score_before}→{context().score_after}</span>
+                    <span {...sx(styles.chip)}>Velocity {Math.round(context().velocity_before * 100)}→{Math.round(context().velocity_after * 100)}</span>
+                    <span {...sx(styles.chip)}>Sources {context().source_count_before}→{context().source_count_after}</span>
+                  </div>
+                )}</Show>
+                <a {...sx(styles.smallButton)} href={`/trend/${item.slug}`}>Open trend</a>
+              </article>
+            )}</For>
+          </Show>
+        </div>
+      </section>
+
+      <section {...sx(styles.section)}>
+        <div {...sx(styles.sectionHeader)}>
+          <div><h2 {...sx(styles.sectionTitle)}>Alert inbox</h2><p {...sx(styles.sectionCopy)}>This inbox is durable and shared by every device using the Radar Key. Rate alerts so Trendinary can measure interruption quality, not just detection quality.</p></div>
           <div {...sx(styles.chips)}>
             <button {...sx(styles.smallButton)} type="button" disabled={working()} onClick={refresh}>{working() ? "Syncing…" : "Sync now"}</button>
             <Show when={unread() > 0}><button {...sx(styles.smallButton)} type="button" onClick={() => void perform(markFollowingAlertsRead)}>Mark read</button></Show>
@@ -267,12 +378,24 @@ export function FollowingPage() {
         <Show when={state().alerts.length > 0} fallback={<div {...sx(styles.emptyState)}><div {...sx(styles.eyebrow)}>QUIET IS VALID OUTPUT</div><h3 {...sx(styles.cardTitle)}>Nothing material changed.</h3><p {...sx(styles.cardCopy)}>Trendinary will surface acceleration, lifecycle transitions, resurfacing, or broader independent-source corroboration here.</p></div>}>
           <div {...sx(styles.trendList)}>
             <For each={state().alerts}>{(alert) => (
-              <a href={`/trend/${alert.slug}`} {...sx(styles.trendRow)}>
-                <div {...sx(styles.rank)}>{alert.read ? "·" : "●"}</div>
-                <div><div {...sx(styles.trendName)}>{alert.title}</div><div {...sx(styles.trendMeta)}>{alert.kind.toUpperCase()} · {relativeTime(alert.created_at)}</div></div>
-                <div {...sx(styles.reason)}>{alert.body}</div>
-                <div {...sx(styles.arrow)}>↗</div>
-              </a>
+              <div>
+                <a href={`/trend/${alert.slug}`} {...sx(styles.trendRow)}>
+                  <div {...sx(styles.rank)}>{alert.read ? "·" : "●"}</div>
+                  <div><div {...sx(styles.trendName)}>{alert.title}</div><div {...sx(styles.trendMeta)}>{alert.kind.toUpperCase()} · {relativeTime(alert.created_at)}</div></div>
+                  <div {...sx(styles.reason)}>{alert.body}</div>
+                  <div {...sx(styles.arrow)}>↗</div>
+                </a>
+                <div {...sx(styles.chips)}>
+                  <span {...sx(styles.cardKicker)}>WAS THIS ALERT WORTH IT?</span>
+                  <For each={[
+                    ["useful", "Useful"],
+                    ["noise", "Noise"],
+                    ["too_late", "Too late"],
+                  ] as Array<[AlertFeedbackRating, string]>}>{([rating, label]) => (
+                    <button {...sx(feedback()[alert.id] === rating ? styles.followButton : styles.smallButton)} type="button" disabled={working()} onClick={() => void rateAlert(alert.id, rating)}>{label}</button>
+                  )}</For>
+                </div>
+              </div>
             )}</For>
           </div>
         </Show>
