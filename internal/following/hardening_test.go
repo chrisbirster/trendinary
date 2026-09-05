@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chrisbirster/trendinary/internal/model"
 )
 
 func decryptPushBody(t *testing.T, body, receiverPublic []byte, receiver *ecdh.PrivateKey, auth []byte) []byte {
