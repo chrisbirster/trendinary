@@ -79,17 +79,29 @@ func (c *Collector) subscriptionOptions(cursor uint64, hasCursor bool) ([]bskyje
 		return opts, "archive-replay"
 	}
 	// A persisted cursor must never make the public live stream unavailable.
-	// Without an archive credential, resume the live tail from the last cursor
-	// instead of requesting authenticated archive replay and dying with 401.
+	// Without an archive credential, first attempt to resume the public live
+	// tail from the durable cursor. If the cursor has fallen below the server's
+	// bounded lookback floor, Run deliberately drops the gap and attaches at the
+	// current live tip instead of leaving discovery offline.
 	opts = append(opts, bskyjetstream.WithLiveCursor(cursor))
 	return opts, "live-resume"
+}
+
+func liveCursorTooOld(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "live cursor too old") || strings.Contains(message, "cursor too old")
 }
 
 // Run consumes app.bsky.feed.post commits until the context is cancelled or
 // Jetstream reports a terminal failure. When a durable cursor exists and an
 // archive API key is configured, the v2 client replays from that sequence and
-// then cuts over to live. Without a key it resumes the public live tail from
-// the cursor so missing archive credentials cannot take the stream offline.
+// then cuts over to live. Without a key it first attempts a public live resume;
+// if that cursor is outside the server's lookback window, it deliberately
+// attaches at the current live tip so missing archive credentials cannot keep
+// continuous discovery offline.
 func (c *Collector) Run(ctx context.Context) error {
 	if c.history == nil || c.recent == nil {
 		return fmt.Errorf("jetstream collector dependencies are incomplete")
@@ -102,46 +114,70 @@ func (c *Collector) Run(ctx context.Context) error {
 	}
 
 	opts, mode := c.subscriptionOptions(cursor, hasCursor)
-	if mode == "live-resume" {
-		slog.Warn("jetstream archive replay disabled; resuming public live tail from cursor",
-			"cursor", cursor,
-			"configure", "TRENDINARY_JETSTREAM_API_KEY",
-		)
-	} else {
-		slog.Info("jetstream subscription configured", "mode", mode, "has_cursor", hasCursor)
-	}
+	for {
+		if mode == "live-resume" {
+			slog.Warn("jetstream archive replay disabled; resuming public live tail from cursor",
+				"cursor", cursor,
+				"configure", "TRENDINARY_JETSTREAM_API_KEY",
+			)
+		} else {
+			slog.Info("jetstream subscription configured", "mode", mode, "has_cursor", hasCursor)
+		}
 
-	client, err := bskyjetstream.Subscribe(c.config.Host, opts...)
-	if err != nil {
-		return fmt.Errorf("subscribe jetstream: %w", err)
-	}
-	defer client.Close()
-	c.config.Status.StreamConnected(c.config.Host)
-	if hasCursor {
-		c.config.Status.StreamBatch(cursor, 0, time.Time{})
-	}
+		client, err := bskyjetstream.Subscribe(c.config.Host, opts...)
+		if err != nil {
+			return fmt.Errorf("subscribe jetstream: %w", err)
+		}
+		c.config.Status.StreamConnected(c.config.Host)
+		if hasCursor {
+			c.config.Status.StreamBatch(cursor, 0, time.Time{})
+		}
 
-	for batch, streamErr := range client.Events(ctx) {
-		if streamErr != nil {
-			if errors.Is(streamErr, bskyjetstream.ErrFatal) {
-				return fmt.Errorf("%w: %v", ErrFatal, streamErr)
+		restartAtLiveTip := false
+		for batch, streamErr := range client.Events(ctx) {
+			if streamErr != nil {
+				if errors.Is(streamErr, bskyjetstream.ErrFatal) {
+					if mode == "live-resume" && liveCursorTooOld(streamErr) {
+						slog.Warn("jetstream live cursor is outside server lookback; dropping unreplayable gap and attaching at current live tip",
+							"cursor", cursor,
+							"configure_archive_replay", "TRENDINARY_JETSTREAM_API_KEY",
+						)
+						c.config.Status.StreamDisconnected(streamErr, 0)
+						restartAtLiveTip = true
+						break
+					}
+					_ = client.Close()
+					return fmt.Errorf("%w: %v", ErrFatal, streamErr)
+				}
+				slog.Warn("recoverable jetstream error", "error", streamErr)
+				c.config.Status.StreamDisconnected(streamErr, 0)
+				continue
 			}
-			slog.Warn("recoverable jetstream error", "error", streamErr)
-			c.config.Status.StreamDisconnected(streamErr, 0)
-			continue
+			if batch == nil || len(batch.Events()) == 0 {
+				continue
+			}
+			if err := c.applyBatch(ctx, batch.Events(), batch.LastCursor()); err != nil {
+				_ = client.Close()
+				return err
+			}
 		}
-		if batch == nil || len(batch.Events()) == 0 {
-			continue
-		}
-		if err := c.applyBatch(ctx, batch.Events(), batch.LastCursor()); err != nil {
-			return err
-		}
-	}
+		_ = client.Close()
 
-	if ctx.Err() != nil {
-		return ctx.Err()
+		if restartAtLiveTip {
+			// No archive credential means the missing interval cannot be recovered.
+			// Omit the stale cursor on the next subscription so Jetstream starts at
+			// the current tip. The first delivered batch advances the durable cursor
+			// normally, so subsequent restarts can resume from fresh state.
+			cursor = 0
+			hasCursor = false
+			opts, mode = c.subscriptionOptions(0, false)
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrStreamEnded
 	}
-	return ErrStreamEnded
 }
 
 // applyBatch folds one Jetstream batch into durable application state before
