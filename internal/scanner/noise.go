@@ -31,10 +31,25 @@ func filterDiscoveryNoise(values []model.Signal) noiseResult {
 	return noiseResult{Signals:out,Suppressed:suppressed}
 }
 
-// candidateClusterV2 deliberately shares the same admission policy as the
-// legacy multi-source path. Production must not maintain a second, looser
-// definition of what counts as enough independent evidence for a public trend.
+// candidateClusterV2 uses the shared independent-evidence gate, with one
+// production-specific source-role rule: NewsData may corroborate a fresher
+// observation but may not create a public trend when it is the only discovery
+// source represented in the cluster.
 func candidateClusterV2(cluster engine.Cluster) bool {
+	hasQualifyingSignal := false
+	hasFreshSignal := false
+	for _, signal := range cluster.Signals {
+		if contextOnlyCandidateSignal(signal) {
+			continue
+		}
+		hasQualifyingSignal = true
+		if !strings.HasPrefix(signal.ID, "newsdata:") {
+			hasFreshSignal = true
+		}
+	}
+	if hasQualifyingSignal && !hasFreshSignal {
+		return false
+	}
 	return candidateCluster(cluster)
 }
 
