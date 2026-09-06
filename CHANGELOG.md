@@ -4,6 +4,14 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-06
+
+### Fixed
+
+- Bluesky Jetstream archive replay now uses `TRENDINARY_JETSTREAM_API_KEY` when configured. When no archive key is present, Trendinary resumes the public live tail from its durable cursor instead of requesting authenticated archive replay and terminating with a 401.
+- Production smoke now fails when enabled Jetstream is disconnected, scanner success is more than 15 minutes stale, or a scanner run has remained active for more than 3 minutes; startup gets a bounded retry window before the deployment is declared unhealthy.
+- Jetstream regression coverage now verifies environment-key loading plus authenticated archive-replay and credential-free live-resume mode selection without logging bearer material.
+
 ## [0.5.0] - 2026-09-05
 
 ### Added
