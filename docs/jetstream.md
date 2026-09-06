@@ -48,11 +48,16 @@ For each batch Trendinary applies state in this order:
 3. update the bounded recent window;
 4. persist `Batch.LastCursor()`.
 
-The state operations are idempotent. If the process crashes after writing signals but before advancing the cursor, the batch is replayed safely.
+The state operations are idempotent. If the process crashes after writing signals but before advancing the cursor, the batch is safe to see again.
 
-On first boot, Trendinary starts from Jetstream's current live tip. Once a cursor exists, reconnects use Jetstream v2 archive replay from that cursor and then cut over to the live tail. This avoids intentionally replaying the entire historical AT Protocol archive on a brand-new installation while preserving gap-free restarts.
+On first boot, Trendinary starts from Jetstream's current live tip. Once a cursor exists there are two restart modes:
 
-Because production cursor state lives in Turso rather than on a Fly disk, replacing a Fly machine does not reset stream replay position.
+- when `TRENDINARY_JETSTREAM_API_KEY` is configured, Trendinary performs authenticated Jetstream archive replay from the durable cursor and then cuts over to the public live tail;
+- when the archive key is absent, Trendinary uses `WithLiveCursor` and resumes the public live tail from the durable cursor instead of requesting archive replay and failing authentication.
+
+The second mode deliberately prioritizes keeping live discovery online. Configure the archive API key when gap-free catch-up across longer outages is required. The raw key is passed to the Jetstream client, which scopes it to archive negotiation/download requests; Trendinary never logs it and it is not sent to the public live WebSocket.
+
+Because production cursor state lives in Turso rather than on a Fly disk, replacing a Fly machine does not reset stream position.
 
 ## Recent signal window
 
@@ -73,12 +78,17 @@ The current lexical/entity-aware clusterer performs pairwise similarity checks o
 | --- | --- | --- |
 | `TRENDINARY_JETSTREAM_DISABLED` | unset | Set to `1` to disable continuous ATProto ingestion. |
 | `TRENDINARY_JETSTREAM_HOST` | `https://jetstream.us-east.bsky.network` | Jetstream v2 service endpoint. |
+| `TRENDINARY_JETSTREAM_API_KEY` | unset | Optional bearer key for authenticated archive replay/catch-up. Raw key only; do not prefix with `Bearer`. Live streaming remains credential-free when unset. |
 | `TRENDINARY_JETSTREAM_BATCH_SIZE` | `128` | Maximum events folded per client batch. |
 | `TRENDINARY_RECENT_SIGNAL_LIMIT` | `50000` | Maximum signals retained in the in-memory discovery window. |
 | `TRENDINARY_RECENT_SIGNAL_TTL` | `30m` | Age limit for the in-memory discovery window. |
 | `TRENDINARY_SCAN_INTERVAL` | `2m` | Periodic scoring cadence. |
 | `TURSO_DATABASE_URL` | unset | Production libSQL database URL. |
 | `TURSO_AUTH_TOKEN` | unset | Production database auth token. |
+
+## Production health gate
+
+The production smoke workflow requires an enabled Jetstream collector to be connected. It also requires the scanner's most recent successful pass to be less than 15 minutes old and treats a scan that has remained in the running state for more than 3 minutes as stuck. The deploy smoke retries during process startup before declaring the release unhealthy.
 
 ## Current limitations
 
