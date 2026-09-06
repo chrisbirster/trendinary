@@ -4,6 +4,13 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-06
+
+### Fixed
+
+- Credential-free Jetstream recovery now handles durable cursors that have fallen below Bluesky's bounded live lookback floor. Trendinary records the gap as unreplayable without an archive key, drops the stale resume cursor, and attaches at the current public live tip instead of terminating the stream.
+- Added regression coverage for the exact production `live cursor too old` failure and for the cursor-free live-tip subscription used by recovery.
+
 ## [0.5.1] - 2026-09-06
 
 ### Fixed
