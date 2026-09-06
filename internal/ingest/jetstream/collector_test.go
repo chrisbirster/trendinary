@@ -10,6 +10,37 @@ import (
 	"github.com/chrisbirster/trendinary/internal/recent"
 )
 
+func TestNewLoadsJetstreamAPIKeyFromEnvironment(t *testing.T) {
+	t.Setenv("TRENDINARY_JETSTREAM_API_KEY", "  archive-secret  ")
+	collector := New(nil, nil, Config{})
+	if collector.config.APIKey != "archive-secret" {
+		t.Fatalf("api key = %q, want trimmed configured key", collector.config.APIKey)
+	}
+}
+
+func TestSubscriptionModeFallsBackToPublicLiveResumeWithoutAPIKey(t *testing.T) {
+	t.Setenv("TRENDINARY_JETSTREAM_API_KEY", "")
+	collector := New(nil, nil, Config{})
+	opts, mode := collector.subscriptionOptions(1234, true)
+	if mode != "live-resume" {
+		t.Fatalf("mode = %q, want live-resume", mode)
+	}
+	if len(opts) != 4 {
+		t.Fatalf("options = %d, want base options plus live cursor", len(opts))
+	}
+}
+
+func TestSubscriptionModeUsesAuthenticatedArchiveReplayWhenConfigured(t *testing.T) {
+	collector := New(nil, nil, Config{APIKey: "archive-secret"})
+	opts, mode := collector.subscriptionOptions(1234, true)
+	if mode != "archive-replay" {
+		t.Fatalf("mode = %q, want archive-replay", mode)
+	}
+	if len(opts) != 5 {
+		t.Fatalf("options = %d, want base options plus api key and replay cursor", len(opts))
+	}
+}
+
 func TestApplyBatchFoldsCreateUpdateDeleteAndCursor(t *testing.T) {
 	historical, err := history.Open(":memory:")
 	if err != nil {
