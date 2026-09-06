@@ -29,6 +29,8 @@ jobs:
             echo "::error::VERSION ($FILE_VERSION) does not match package.json ($PACKAGE_VERSION)"
             exit 1
           fi
+      - name: Verify production smoke syntax
+        run: bash -n .github/scripts/production-smoke.sh
       - name: Verify Go module lock files
         run: |
           go mod tidy
