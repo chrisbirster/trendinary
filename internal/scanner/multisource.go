@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	maxStreamingDiscoverySignals = 1500
-	maxCandidateClusters          = 100
-	minStreamOnlyAuthors          = 2
+	maxStreamingDiscoverySignals      = 1500
+	maxCandidateClusters               = 100
+	minIndependentCandidateSignals     = 2
+	minIndependentCommunityActors      = 2
 )
 
 type DiscoverySource interface {
@@ -253,33 +254,82 @@ func (s *Scanner) enrichBlueskyProfiles(ctx context.Context, cluster *engine.Clu
 }
 
 func candidateCluster(cluster engine.Cluster) bool {
-	authors := make(map[string]struct{})
-	hasNonStreamSignal := false
+	qualifyingSignals := 0
+	publishers := make(map[string]struct{})
+	communityActors := make(map[string]struct{})
+
 	for _, signal := range cluster.Signals {
-		if signal.Source.Domain != "bsky.app" {
-			hasNonStreamSignal = true
+		if contextOnlyCandidateSignal(signal) {
+			continue
 		}
-		identity := signal.AuthorID
-		if identity == "" {
-			identity = signal.Author
+		qualifyingSignals++
+		if key := candidateSourceKey(signal); key != "" {
+			publishers[key] = struct{}{}
 		}
-		if signal.Source.Domain == "bsky.app" && identity != "" {
-			authors[identity] = struct{}{}
+		if key := candidateCommunityActorKey(signal); key != "" {
+			communityActors[key] = struct{}{}
 		}
 	}
-	return hasNonStreamSignal || len(authors) >= minStreamOnlyAuthors
+
+	if qualifyingSignals < minIndependentCandidateSignals {
+		return false
+	}
+	return len(publishers) >= 2 || len(communityActors) >= minIndependentCommunityActors
+}
+
+func contextOnlyCandidateSignal(signal model.Signal) bool {
+	domain := strings.ToLower(strings.TrimSpace(signal.Source.Domain))
+	channel := strings.ToLower(strings.TrimSpace(signal.DiscoveryChannel))
+	return domain == "wikipedia.org" || channel == "wikipedia"
+}
+
+func candidateSourceKey(signal model.Signal) string {
+	key := strings.ToLower(strings.TrimSpace(signal.Source.Domain))
+	if key == "" {
+		key = strings.ToLower(strings.TrimSpace(signal.Source.Name))
+	}
+	return key
+}
+
+func candidateCommunityActorKey(signal model.Signal) string {
+	domain := strings.ToLower(strings.TrimSpace(signal.Source.Domain))
+	channel := strings.ToLower(strings.TrimSpace(signal.DiscoveryChannel))
+	community := domain == "bsky.app" || domain == "github.com" || channel == "bluesky" || channel == "hacker-news" || channel == "github"
+	if !community {
+		return ""
+	}
+	identity := strings.TrimSpace(signal.AuthorID)
+	if identity == "" {
+		identity = strings.TrimSpace(signal.Author)
+	}
+	if identity == "" {
+		return ""
+	}
+	if channel == "" {
+		channel = domain
+	}
+	return channel + ":" + strings.ToLower(identity)
 }
 
 func candidateWeight(cluster engine.Cluster) int {
-	authors := make(map[string]struct{})
+	communityActors := make(map[string]struct{})
+	publishers := make(map[string]struct{})
+	qualifyingSignals := 0
+	engagement := 0
+
 	for _, signal := range cluster.Signals {
-		identity := signal.AuthorID
-		if identity == "" {
-			identity = signal.Author
+		if contextOnlyCandidateSignal(signal) {
+			continue
 		}
-		if identity != "" {
-			authors[signal.Source.Domain+":"+identity] = struct{}{}
+		qualifyingSignals++
+		if key := candidateSourceKey(signal); key != "" {
+			publishers[key] = struct{}{}
 		}
+		if key := candidateCommunityActorKey(signal); key != "" {
+			communityActors[key] = struct{}{}
+		}
+		engagement += signal.Engagement.Score + signal.Engagement.Likes + signal.Engagement.Reposts + signal.Engagement.Replies + signal.Engagement.Quotes
 	}
-	return clusterEngagement(cluster) + len(cluster.Signals)*10 + len(authors)*25
+
+	return engagement + qualifyingSignals*10 + len(communityActors)*25 + len(publishers)*50
 }
