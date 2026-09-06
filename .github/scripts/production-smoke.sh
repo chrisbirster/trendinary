@@ -28,19 +28,22 @@ check_runtime_health() {
   local attempts="${TRENDINARY_SMOKE_RUNTIME_ATTEMPTS:-30}"
   local delay="${TRENDINARY_SMOKE_RUNTIME_DELAY_SECONDS:-5}"
   local attempt
-  local filter='\
-    def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;\
-    .data as $d |\
-    ($d | type == "object" and has("jetstream") and has("scanner") and has("window")) and\
-    ($d.jetstream.enabled != true or $d.jetstream.connected == true) and\
-    ($d.scanner.enabled != true or (\
-      ($d.scanner.last_success_at? | type == "string") and\
-      (($d.scanner.last_success_at | epoch) >= (now - 900)) and\
-      ($d.scanner.running != true or (\
-        ($d.scanner.last_started_at? | type == "string") and\
-        (($d.scanner.last_started_at | epoch) >= (now - 180))\
-      ))\
-    ))'
+  local filter
+  filter="$(cat <<'JQ'
+def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+.data as $d |
+($d | type == "object" and has("jetstream") and has("scanner") and has("window")) and
+($d.jetstream.enabled != true or $d.jetstream.connected == true) and
+($d.scanner.enabled != true or (
+  ($d.scanner.last_success_at? | type == "string") and
+  (($d.scanner.last_success_at | epoch) >= (now - 900)) and
+  ($d.scanner.running != true or (
+    ($d.scanner.last_started_at? | type == "string") and
+    (($d.scanner.last_started_at | epoch) >= (now - 180))
+  ))
+))
+JQ
+)"
 
   for attempt in $(seq 1 "$attempts"); do
     echo "smoke: GET ${BASE_URL}${path} (runtime attempt ${attempt}/${attempts})"
