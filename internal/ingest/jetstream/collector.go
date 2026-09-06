@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type Config struct {
 	Host      string
 	BatchSize int
 	Status    *runtimeinfo.Status
+	APIKey    string
 }
 
 type Collector struct {
@@ -46,6 +48,10 @@ func New(historical *history.Store, recentSignals *recent.Store, config Config) 
 	if config.BatchSize <= 0 {
 		config.BatchSize = 128
 	}
+	config.APIKey = strings.TrimSpace(config.APIKey)
+	if config.APIKey == "" {
+		config.APIKey = strings.TrimSpace(os.Getenv("TRENDINARY_JETSTREAM_API_KEY"))
+	}
 	return &Collector{history: historical, recent: recentSignals, config: config}
 }
 
@@ -53,9 +59,37 @@ func (c *Collector) Host() string {
 	return c.config.Host
 }
 
+func (c *Collector) subscriptionOptions(cursor uint64, hasCursor bool) ([]bskyjetstream.Option, string) {
+	opts := []bskyjetstream.Option{
+		bskyjetstream.WithKinds([]bskyjetstream.Kind{bskyjetstream.KindCommit}),
+		bskyjetstream.WithCollection(postsCollection),
+		bskyjetstream.WithBatchSize(c.config.BatchSize),
+	}
+	if !hasCursor {
+		return opts, "live"
+	}
+	if c.config.APIKey != "" {
+		// Archive replay requires a bearer API key. The jetstream client scopes
+		// this secret to archive XRPC/download requests and never sends it to the
+		// public live WebSocket.
+		opts = append(opts,
+			bskyjetstream.WithAPIKey(c.config.APIKey),
+			bskyjetstream.WithAfterSeq(cursor),
+		)
+		return opts, "archive-replay"
+	}
+	// A persisted cursor must never make the public live stream unavailable.
+	// Without an archive credential, resume the live tail from the last cursor
+	// instead of requesting authenticated archive replay and dying with 401.
+	opts = append(opts, bskyjetstream.WithLiveCursor(cursor))
+	return opts, "live-resume"
+}
+
 // Run consumes app.bsky.feed.post commits until the context is cancelled or
-// Jetstream reports a terminal failure. When a durable cursor exists, the v2
-// client replays from that sequence and then cuts over to the live tail.
+// Jetstream reports a terminal failure. When a durable cursor exists and an
+// archive API key is configured, the v2 client replays from that sequence and
+// then cuts over to live. Without a key it resumes the public live tail from
+// the cursor so missing archive credentials cannot take the stream offline.
 func (c *Collector) Run(ctx context.Context) error {
 	if c.history == nil || c.recent == nil {
 		return fmt.Errorf("jetstream collector dependencies are incomplete")
@@ -67,13 +101,14 @@ func (c *Collector) Run(ctx context.Context) error {
 		return fmt.Errorf("load jetstream cursor: %w", err)
 	}
 
-	opts := []bskyjetstream.Option{
-		bskyjetstream.WithKinds([]bskyjetstream.Kind{bskyjetstream.KindCommit}),
-		bskyjetstream.WithCollection(postsCollection),
-		bskyjetstream.WithBatchSize(c.config.BatchSize),
-	}
-	if hasCursor {
-		opts = append(opts, bskyjetstream.WithAfterSeq(cursor))
+	opts, mode := c.subscriptionOptions(cursor, hasCursor)
+	if mode == "live-resume" {
+		slog.Warn("jetstream archive replay disabled; resuming public live tail from cursor",
+			"cursor", cursor,
+			"configure", "TRENDINARY_JETSTREAM_API_KEY",
+		)
+	} else {
+		slog.Info("jetstream subscription configured", "mode", mode, "has_cursor", hasCursor)
 	}
 
 	client, err := bskyjetstream.Subscribe(c.config.Host, opts...)
