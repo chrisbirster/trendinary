@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -30,6 +31,18 @@ func TestSubscriptionModeFallsBackToPublicLiveResumeWithoutAPIKey(t *testing.T) 
 	}
 }
 
+func TestSubscriptionModeUsesCurrentLiveTipWithoutCursor(t *testing.T) {
+	t.Setenv("TRENDINARY_JETSTREAM_API_KEY", "")
+	collector := New(nil, nil, Config{})
+	opts, mode := collector.subscriptionOptions(0, false)
+	if mode != "live" {
+		t.Fatalf("mode = %q, want live", mode)
+	}
+	if len(opts) != 3 {
+		t.Fatalf("options = %d, want only base live options", len(opts))
+	}
+}
+
 func TestSubscriptionModeUsesAuthenticatedArchiveReplayWhenConfigured(t *testing.T) {
 	collector := New(nil, nil, Config{APIKey: "archive-secret"})
 	opts, mode := collector.subscriptionOptions(1234, true)
@@ -38,6 +51,19 @@ func TestSubscriptionModeUsesAuthenticatedArchiveReplayWhenConfigured(t *testing
 	}
 	if len(opts) != 5 {
 		t.Fatalf("options = %d, want base options plus api key and replay cursor", len(opts))
+	}
+}
+
+func TestLiveCursorTooOldDetection(t *testing.T) {
+	productionError := errors.New("jetstream: fatal stream error: dial: jetstream: live cursor too old: subscribe: cursor too old: cursor 25378276271 below lookback floor 25501250236; re-backfill from your last seq")
+	if !liveCursorTooOld(productionError) {
+		t.Fatal("expected production too-old cursor error to trigger live-tip recovery")
+	}
+	if liveCursorTooOld(errors.New("jetstream: fatal stream error: permission denied")) {
+		t.Fatal("unrelated fatal error must not trigger live-tip recovery")
+	}
+	if liveCursorTooOld(nil) {
+		t.Fatal("nil error must not trigger live-tip recovery")
 	}
 }
 
