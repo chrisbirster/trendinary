@@ -98,29 +98,40 @@ LIMIT 8`, args...)
 	if err != nil {
 		return Entity{}, false, err
 	}
-	defer rows.Close()
+	type candidateRef struct {
+		id   string
+		hits int
+	}
+	refs := make([]candidateRef, 0, 8)
+	for rows.Next() {
+		var ref candidateRef
+		if err := rows.Scan(&ref.id, &ref.hits); err != nil {
+			rows.Close()
+			return Entity{}, false, err
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return Entity{}, false, err
+	}
+	if err := rows.Close(); err != nil {
+		return Entity{}, false, err
+	}
 
 	type candidate struct {
 		entity Entity
 		hits   int
 	}
-	matches := make([]candidate, 0, 8)
-	for rows.Next() {
-		var id string
-		var hits int
-		if err := rows.Scan(&id, &hits); err != nil {
-			return Entity{}, false, err
-		}
-		entity, err := s.EntityByID(ctx, id)
+	matches := make([]candidate, 0, len(refs))
+	for _, ref := range refs {
+		entity, err := s.EntityByID(ctx, ref.id)
 		if err != nil {
 			return Entity{}, false, err
 		}
 		if strictEntityMatch(entity, terms) {
-			matches = append(matches, candidate{entity: entity, hits: hits})
+			matches = append(matches, candidate{entity: entity, hits: ref.hits})
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return Entity{}, false, err
 	}
 	if len(matches) == 0 {
 		return Entity{}, false, nil
