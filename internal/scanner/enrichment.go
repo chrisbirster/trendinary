@@ -22,22 +22,20 @@ func (s *Scanner) decorateTrend(ctx context.Context, trend *model.Trend, entity 
 	trend.TopVoices = topVoices(cluster.Signals, 8)
 	trend.Perspective = perspective.Analyze(trend.Sources)
 
+	// Persist long-lived propagation for analytics, but render only the path
+	// derived from the currently validated rolling evidence. Historical entity
+	// rows may predate today's clustering/identity rules and must not leak old
+	// bad merges back into the public explanation.
 	currentPath := propagation.Build(cluster.Signals, now)
 	if err := s.history.RecordPropagation(ctx, entity.ID, currentPath, now); err != nil {
 		return err
 	}
-	path, err := s.history.Propagation(ctx, entity.ID)
-	if err != nil {
-		return err
-	}
-	// Bias/source metadata is a catalog property and is not duplicated into the
-	// propagation history table. Rehydrate it when serving the current object.
-	for index := range path {
-		if catalog, ok := s.memory.Source(path[index].Source.Domain); ok {
-			path[index].Source = catalog
+	for index := range currentPath {
+		if catalog, ok := s.memory.Source(currentPath[index].Source.Domain); ok {
+			currentPath[index].Source = catalog
 		}
 	}
-	trend.Propagation = path
+	trend.Propagation = currentPath
 
 	explanation := explain.Build(*trend, cluster.Signals, entity.FirstSeen)
 	trend.Explanation = &explanation
