@@ -33,7 +33,11 @@ check_runtime_health() {
 def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 .data as $d |
 ($d | type == "object" and has("jetstream") and has("scanner") and has("window")) and
-($d.jetstream.enabled != true or $d.jetstream.connected == true) and
+($d.jetstream.enabled != true or (
+  $d.jetstream.connected == true and
+  ($d.jetstream.last_event_at? | type == "string") and
+  (($d.jetstream.last_event_at | epoch) >= (now - 600))
+)) and
 ($d.scanner.enabled != true or (
   ($d.scanner.last_success_at? | type == "string") and
   (($d.scanner.last_success_at | epoch) >= (now - 900)) and
@@ -56,7 +60,7 @@ JQ
     fi
   done
 
-  echo "::error::Trendinary runtime is degraded: Jetstream must be connected and scanner success must be <15m old (a running scan must have started <3m ago)."
+  echo "::error::Trendinary runtime is degraded: Jetstream must be connected with a real event <10m old; scanner success must be <15m old (a running scan must have started <3m ago)."
   jq . "$output" || cat "$output"
   return 1
 }
