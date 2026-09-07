@@ -61,9 +61,11 @@ CREATE TABLE IF NOT EXISTS trendinary_database_resets (
 
 	// A rolling deployment can start more than one new Machine against the same
 	// Turso database. BEGIN IMMEDIATE serializes reset contenders before either
-	// can inspect the marker or drop an object.
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return false, fmt.Errorf("begin database reset: %w", err)
+	// can inspect the marker or drop an object. Some SQLite/libSQL drivers report
+	// SQLITE_BUSY immediately instead of honoring a connection-local busy timeout,
+	// so acquisition is retried for a bounded interval.
+	if err := beginResetTransaction(ctx, conn); err != nil {
+		return false, err
 	}
 	inTransaction := true
 	defer func() {
@@ -142,6 +144,39 @@ VALUES (?, ?)`, resetID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil 
 	}
 	foreignKeysDisabled = false
 	return true, nil
+}
+
+func beginResetTransaction(ctx context.Context, conn *sql.Conn) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err == nil {
+			return nil
+		} else if !resetLockBusy(err) {
+			return fmt.Errorf("begin database reset: %w", err)
+		} else if time.Now().After(deadline) {
+			return fmt.Errorf("begin database reset: timed out waiting for reset lock: %w", err)
+		}
+
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("begin database reset: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func resetLockBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked")
 }
 
 func quoteResetIdentifier(value string) string {
