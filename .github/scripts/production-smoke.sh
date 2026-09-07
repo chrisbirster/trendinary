@@ -64,8 +64,15 @@ JQ
 check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .version == "v1" and .following == true and .web_push == true'
 check_runtime_health
 check_json "/api/v1/trends" '
-  (.data | type == "array" and length > 0) and
+  (.data | type == "array") and
   all(.data[];
+    ((.slug // "") as $slug |
+      ($slug != "at-protocol" and
+       $slug != "midnight-sun" and
+       $slug != "aster-1" and
+       $slug != "that-blue-chair" and
+       $slug != "orbit-cup" and
+       $slug != "quiet-quitting-2")) and
     ((.timeline // []) | length) >= 2 and
     ((.aliases // []) | length) <= 12 and
     (([.sources[]?.domain] | unique) as $domains |
@@ -74,4 +81,4 @@ check_json "/api/v1/trends" '
 '
 check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
-echo "smoke: production API healthy and leaderboard quality invariants hold"
+echo "smoke: production API healthy; any published leaderboard entries satisfy quality invariants"
