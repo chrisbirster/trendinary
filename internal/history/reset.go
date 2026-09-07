@@ -21,8 +21,11 @@ type resetObject struct {
 // preserving a tiny reset ledger so the same reset ID is never applied twice.
 //
 // The operation pins one database/sql connection because SQLite/Turso PRAGMA
-// state is connection-local. Callers that own schema migrations should reopen
-// or remigrate their stores after a reset before serving traffic.
+// state is connection-local. BEGIN IMMEDIATE makes the reset single-winner
+// across rolling Fly processes, and the reset marker plus all DDL commit in one
+// transaction so a crash cannot leave a partial wipe marked as complete.
+// Callers that own schema migrations should reopen or remigrate their stores
+// after a reset before serving traffic.
 func ResetDatabaseOnce(ctx context.Context, db *sql.DB, resetID string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("database is required")
@@ -46,9 +49,40 @@ CREATE TABLE IF NOT EXISTS trendinary_database_resets (
 		return false, fmt.Errorf("ensure database reset ledger: %w", err)
 	}
 
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return false, fmt.Errorf("disable foreign keys for reset: %w", err)
+	}
+	foreignKeysDisabled := true
+	defer func() {
+		if foreignKeysDisabled {
+			_, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+		}
+	}()
+
+	// A rolling deployment can start more than one new Machine against the same
+	// Turso database. BEGIN IMMEDIATE serializes reset contenders before either
+	// can inspect the marker or drop an object.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return false, fmt.Errorf("begin database reset: %w", err)
+	}
+	inTransaction := true
+	defer func() {
+		if inTransaction {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
 	var existing string
 	err = conn.QueryRowContext(ctx, `SELECT reset_id FROM trendinary_database_resets WHERE reset_id = ?`, resetID).Scan(&existing)
 	if err == nil {
+		if _, rollbackErr := conn.ExecContext(ctx, `ROLLBACK`); rollbackErr != nil {
+			return false, fmt.Errorf("rollback already-applied database reset: %w", rollbackErr)
+		}
+		inTransaction = false
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+			return false, fmt.Errorf("restore foreign keys after skipped reset: %w", err)
+		}
+		foreignKeysDisabled = false
 		return false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -82,16 +116,6 @@ ORDER BY CASE type WHEN 'view' THEN 0 ELSE 1 END, name`, databaseResetTable)
 		return false, fmt.Errorf("close reset object rows: %w", err)
 	}
 
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return false, fmt.Errorf("disable foreign keys for reset: %w", err)
-	}
-	foreignKeysDisabled := true
-	defer func() {
-		if foreignKeysDisabled {
-			_, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
-		}
-	}()
-
 	for _, object := range objects {
 		kind := strings.ToUpper(strings.TrimSpace(object.kind))
 		if kind != "TABLE" && kind != "VIEW" {
@@ -103,16 +127,20 @@ ORDER BY CASE type WHEN 'view' THEN 0 ELSE 1 END, name`, databaseResetTable)
 		}
 	}
 
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
-		return false, fmt.Errorf("restore foreign keys after reset: %w", err)
-	}
-	foreignKeysDisabled = false
-
 	if _, err := conn.ExecContext(ctx, `
 INSERT INTO trendinary_database_resets (reset_id, applied_at)
 VALUES (?, ?)`, resetID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return false, fmt.Errorf("record database reset: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return false, fmt.Errorf("commit database reset: %w", err)
+	}
+	inTransaction = false
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return false, fmt.Errorf("restore foreign keys after reset: %w", err)
+	}
+	foreignKeysDisabled = false
 	return true, nil
 }
 
