@@ -63,7 +63,15 @@ JQ
 
 check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .version == "v1" and .following == true and .web_push == true'
 check_runtime_health
-check_json "/api/v1/trends" '.data | type == "array"'
+check_json "/api/v1/trends" '
+  (.data | type == "array" and length > 0) and
+  all(.data[];
+    ((.timeline // []) | length) >= 2 and
+    ((.aliases // []) | length) <= 12 and
+    (([.sources[]?.domain] | unique) as $domains |
+      (($domains | length) != 1 or $domains[0] != "wikipedia.org"))
+  )
+'
 check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
-echo "smoke: production API healthy"
+echo "smoke: production API healthy and leaderboard quality invariants hold"

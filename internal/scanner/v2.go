@@ -125,7 +125,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	}
 	trends := make([]model.Trend, 0, len(enriched))
 	for _, cluster := range enriched {
-		entity, err := s.history.ResolveEntity(ctx, clusterName(cluster), cluster.Key, engine.CanonicalTerms(cluster.Signals, 8), now)
+		entity, err := s.history.ResolveEntityStrict(ctx, clusterName(cluster), cluster.Key, engine.CanonicalTerms(cluster.Signals, 8), now)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("identity %s: %v", cluster.Key, err))
 			continue

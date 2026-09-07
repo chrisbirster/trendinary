@@ -4,6 +4,19 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-06
+
+### Fixed
+
+- Public trend admission now requires at least two non-context observations with either independent publisher corroboration or independent community actors; a single Wikipedia pageview, article, or repository can no longer become a public trend by itself.
+- Wikipedia pageviews remain supporting attention evidence but cannot seed a candidate or dominate candidate ordering, and duplicate discovery of the same publisher through multiple channels no longer masquerades as independent corroboration.
+- Detection Quality v3 now uses cohesive complete-link event clusters instead of transitive single-link components, preventing bridge headlines from collapsing unrelated events; generic sentence-leading pseudo-entities such as `List` no longer create false named-entity matches.
+- Rolling historical evidence must agree with at least two-thirds of the current cluster before affecting public source breadth, explanation, or propagation.
+- Production V2 stable-entity resolution now requires strong term agreement for wording changes, quarantines already-exploded entities from fuzzy matching, and bounds active terms and aliases instead of accumulating an ever-growing identity vocabulary.
+- Public propagation is rendered from currently validated rolling evidence rather than the entity's unbounded historical propagation table, preventing old bad merges from leaking unrelated source networks into current trend detail.
+- Production smoke now fails on an empty leaderboard, Wikipedia-only public trends, one-observation public trends, or exploded alias sets, in addition to the existing stream/scanner health checks.
+- Regression coverage includes the observed `Andy Ruiz Jr.` Wikipedia singleton, `List of highest-grossing films` versus `List of Intel codenames`, transitive bridge clustering, same-publisher RSS/GDELT duplication, polluted legacy entities, and rolling-evidence bridge contamination.
+
 ## [0.5.2] - 2026-09-06
 
 ### Fixed

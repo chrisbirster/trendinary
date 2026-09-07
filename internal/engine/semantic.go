@@ -9,53 +9,70 @@ import (
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
+var genericEntityTokens = map[string]struct{}{
+	"ask": {}, "breaking": {}, "how": {}, "list": {}, "new": {}, "show": {},
+	"the": {}, "this": {}, "today": {}, "what": {}, "when": {}, "where": {}, "why": {},
+}
+
 // ClusterSignalsV2 performs deterministic event resolution directly across
-// normalized signals. It accepts a strong lexical match immediately, then uses
-// headline overlap, named-entity overlap, and publication proximity to recover
-// the same event when publishers phrase the headline differently.
+// normalized signals. A signal may join an existing cluster only when it
+// matches every signal already in that cluster. This complete-link rule is
+// deliberately conservative: it prevents bridge observations (A≈B and B≈C)
+// from collapsing unrelated A and C events into one public trend.
 func ClusterSignalsV2(input []model.Signal, threshold float64) []Cluster {
 	if threshold <= 0 || threshold > 1 {
 		threshold = 0.42
 	}
-	parent := make([]int, len(input))
-	for i := range parent {
-		parent[i] = i
-	}
-	var find func(int) int
-	find = func(x int) int {
-		if parent[x] != x {
-			parent[x] = find(parent[x])
-		}
-		return parent[x]
-	}
-	union := func(a, b int) {
-		ra, rb := find(a), find(b)
-		if ra != rb {
-			parent[rb] = ra
-		}
-	}
-	for i := 0; i < len(input); i++ {
-		for j := i + 1; j < len(input); j++ {
-			if SameEvent(input[i], input[j], threshold) {
-				union(i, j)
+	values := append([]model.Signal(nil), input...)
+	sort.SliceStable(values, func(i, j int) bool {
+		left, right := signalSortKey(values[i]), signalSortKey(values[j])
+		return left < right
+	})
+
+	clusters := make([]Cluster, 0, len(values))
+	for _, signal := range values {
+		placed := false
+		for index := range clusters {
+			if matchesEntireCluster(signal, clusters[index], threshold) {
+				clusters[index].Signals = append(clusters[index].Signals, signal)
+				placed = true
+				break
 			}
 		}
-	}
-	groups := map[int][]model.Signal{}
-	for i, signal := range input {
-		groups[find(i)] = append(groups[find(i)], signal)
-	}
-	out := make([]Cluster, 0, len(groups))
-	for _, signals := range groups {
-		out = append(out, Cluster{Key: clusterKey(signals), Signals: signals})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if len(out[i].Signals) == len(out[j].Signals) {
-			return out[i].Key < out[j].Key
+		if !placed {
+			clusters = append(clusters, Cluster{Signals: []model.Signal{signal}})
 		}
-		return len(out[i].Signals) > len(out[j].Signals)
+	}
+	for index := range clusters {
+		clusters[index].Key = clusterKey(clusters[index].Signals)
+	}
+	sort.SliceStable(clusters, func(i, j int) bool {
+		if len(clusters[i].Signals) == len(clusters[j].Signals) {
+			return clusters[i].Key < clusters[j].Key
+		}
+		return len(clusters[i].Signals) > len(clusters[j].Signals)
 	})
-	return out
+	return clusters
+}
+
+func signalSortKey(signal model.Signal) string {
+	return strings.Join([]string{
+		strings.TrimSpace(signal.PublishedAt),
+		strings.TrimSpace(signal.ID),
+		strings.ToLower(strings.TrimSpace(ClusteringText(signal))),
+	}, "\x00")
+}
+
+func matchesEntireCluster(signal model.Signal, cluster Cluster, threshold float64) bool {
+	if len(cluster.Signals) == 0 {
+		return true
+	}
+	for _, member := range cluster.Signals {
+		if !SameEvent(signal, member, threshold) {
+			return false
+		}
+	}
+	return true
 }
 
 // SameEvent is intentionally inspectable. Domain equality is not evidence: two
@@ -142,6 +159,12 @@ func EntityKeys(signal model.Signal) map[string]struct{} {
 	flush := func() {
 		if len(phrase) > 0 {
 			joined := strings.ToLower(strings.Join(phrase, " "))
+			if len(phrase) == 1 {
+				if _, generic := genericEntityTokens[joined]; generic {
+					phrase = phrase[:0]
+					return
+				}
+			}
 			if len(joined) >= 3 {
 				out["name:"+joined] = struct{}{}
 			}
