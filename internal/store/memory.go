@@ -13,7 +13,17 @@ type Memory struct {
 	sources map[string]model.Source
 }
 
+// NewMemory is the production-safe in-memory store. It starts with an empty
+// leaderboard and is populated only by quality-gated scanner output.
 func NewMemory() *Memory {
+	memory := NewDemoMemory()
+	memory.trends = nil
+	return memory
+}
+
+// NewDemoMemory contains deterministic prototype trends used only by tests and
+// local fixtures that explicitly opt into them. Production must use NewMemory.
+func NewDemoMemory() *Memory {
 	foxScore := 3.85
 	fox := model.Source{
 		Name:   "Fox News Digital",
@@ -63,15 +73,6 @@ func NewMemory() *Memory {
 	}
 
 	return &Memory{trends: trends, sources: sources}
-}
-
-// NewProductionMemory keeps the production leaderboard empty until the scanner
-// publishes real, quality-gated observations. Demo fixtures remain available
-// through NewMemory for focused tests, but they must never leak into production.
-func NewProductionMemory() *Memory {
-	memory := NewMemory()
-	memory.trends = nil
-	return memory
 }
 
 func (m *Memory) Trends() []model.Trend {
