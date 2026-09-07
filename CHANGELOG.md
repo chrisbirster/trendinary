@@ -4,6 +4,13 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-07
+
+### Fixed
+
+- Rolling Fly Machines now always close and reopen the Turso history Store after participating in a one-time reset, even when another Machine already applied the reset. This prevents a reset loser from continuing with a connection that migrated before the winner dropped the shared schema.
+- Added regression coverage for both the reset-winning process and the reset-losing process to prove each startup reopens against the rebuilt schema before the application continues.
+
 ## [0.5.4] - 2026-09-07
 
 ### Changed
