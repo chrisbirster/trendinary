@@ -13,7 +13,17 @@ type Memory struct {
 	sources map[string]model.Source
 }
 
+// NewMemory is the production-safe in-memory store. It starts with an empty
+// leaderboard and is populated only by quality-gated scanner output.
 func NewMemory() *Memory {
+	memory := NewDemoMemory()
+	memory.trends = nil
+	return memory
+}
+
+// NewDemoMemory contains deterministic prototype trends used only by tests and
+// local fixtures that explicitly opt into them. Production must use NewMemory.
+func NewDemoMemory() *Memory {
 	foxScore := 3.85
 	fox := model.Source{
 		Name:   "Fox News Digital",
@@ -85,7 +95,9 @@ func (m *Memory) Trend(slug string) (model.Trend, bool) {
 }
 
 // ReplaceTrends publishes a complete scanner snapshot atomically. An empty
-// result is ignored so a temporary upstream outage cannot blank the homepage.
+// result is ignored so a temporary upstream outage cannot blank a previously
+// valid live leaderboard. A fresh production process starts empty instead of
+// falling back to prototype data.
 func (m *Memory) ReplaceTrends(trends []model.Trend) {
 	if len(trends) == 0 {
 		return

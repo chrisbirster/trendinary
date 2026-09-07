@@ -43,7 +43,7 @@ func TestStreamHealthReportsRuntimeAndWindow(t *testing.T) {
 }
 
 func TestAskTrendIsGroundedAndNoStore(t *testing.T) {
-	handler := httpapi.New(store.NewMemory(), http.NotFoundHandler())
+	handler := httpapi.New(store.NewDemoMemory(), http.NotFoundHandler())
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/trends/at-protocol/ask", bytes.NewBufferString(`{"question":"Why is this trending?"}`))
 	req.Header.Set("Content-Type", "application/json")
 	res := httptest.NewRecorder()

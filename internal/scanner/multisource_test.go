@@ -72,7 +72,7 @@ func TestRunWithRecentRejectsSingleAuthorStreamClusterAndPreservesLastGoodView(t
 	}
 	defer historical.Close()
 
-	memory := store.NewMemory()
+	memory := store.NewDemoMemory()
 	before := memory.Trends()
 	window := recent.New(100, time.Hour)
 	window.Upsert(model.Signal{

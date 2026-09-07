@@ -26,7 +26,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestTrend(t *testing.T) {
-	handler := httpapi.New(store.NewMemory(), http.NotFoundHandler())
+	handler := httpapi.New(store.NewDemoMemory(), http.NotFoundHandler())
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/trends/at-protocol", nil)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)

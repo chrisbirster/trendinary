@@ -4,6 +4,21 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-07
+
+### Changed
+
+- Production performs one idempotent clean-slate Turso application-data reset under reset ID `2026-09-07-v0.5.4-clean-slate`, rebuilding Trendinary's schemas from current migrations because the service has no production users and pre-v0.5.3 detector state is not trustworthy.
+- The reset is serialized with `BEGIN IMMEDIATE` on one pinned SQL connection so rolling Fly Machines cannot race a partial wipe/rebuild; the reset marker and table/view drops commit atomically.
+- `store.NewMemory()` is now production-safe and starts with no trends. Prototype fixtures moved behind explicit `NewDemoMemory()` so an empty quality-gated scan can never fall back to fake trends such as `AT Protocol` or `That Blue Chair`.
+- A quiet/empty leaderboard is now valid production output. Deployment smoke validates every published trend instead of requiring Trendinary to manufacture a minimum count.
+- The header no longer routes `Search / Ask` to the prototype `AT Protocol` trend; it links back to the live leaderboard until a real search surface exists.
+
+### Fixed
+
+- Jetstream cursor restoration no longer manufactures a fresh `last_event_at` timestamp. Only a real observed event advances stream freshness, and production smoke requires a real Jetstream event less than ten minutes old.
+- Added regression coverage for complete database wiping/rebuild, idempotent reset IDs, concurrent reset callers, production memory containing no prototype trends, explicit demo fixtures, and cursor-only versus real-event stream freshness.
+
 ## [0.5.3] - 2026-09-06
 
 ### Fixed

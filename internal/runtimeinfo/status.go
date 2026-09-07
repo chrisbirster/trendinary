@@ -83,12 +83,16 @@ func (s *Status) StreamConnected(host string) {
 	s.mu.Lock(); s.stream.Host = host; s.stream.Connected = true; s.stream.LastError = ""; s.stream.RetryIn = 0; s.mu.Unlock()
 }
 
+// StreamBatch records cursor/batch progress and only advances LastEventAt when
+// the caller observed an actual event timestamp. A cursor-only resume must not
+// manufacture a fresh event heartbeat and hide a stalled Jetstream connection.
 func (s *Status) StreamBatch(cursor uint64, batchSize int, observedAt time.Time) {
 	if s == nil { return }
-	if observedAt.IsZero() { observedAt = time.Now().UTC() }
 	s.mu.Lock()
 	s.stream.Connected = true
-	s.stream.LastEventAt = observedAt.UTC()
+	if !observedAt.IsZero() {
+		s.stream.LastEventAt = observedAt.UTC()
+	}
 	s.stream.LastCursor = cursor
 	s.stream.LastBatchSize = batchSize
 	s.mu.Unlock()
