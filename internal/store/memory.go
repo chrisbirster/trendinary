@@ -65,6 +65,15 @@ func NewMemory() *Memory {
 	return &Memory{trends: trends, sources: sources}
 }
 
+// NewProductionMemory keeps the production leaderboard empty until the scanner
+// publishes real, quality-gated observations. Demo fixtures remain available
+// through NewMemory for focused tests, but they must never leak into production.
+func NewProductionMemory() *Memory {
+	memory := NewMemory()
+	memory.trends = nil
+	return memory
+}
+
 func (m *Memory) Trends() []model.Trend {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -85,7 +94,9 @@ func (m *Memory) Trend(slug string) (model.Trend, bool) {
 }
 
 // ReplaceTrends publishes a complete scanner snapshot atomically. An empty
-// result is ignored so a temporary upstream outage cannot blank the homepage.
+// result is ignored so a temporary upstream outage cannot blank a previously
+// valid live leaderboard. A fresh production process starts empty instead of
+// falling back to prototype data.
 func (m *Memory) ReplaceTrends(trends []model.Trend) {
 	if len(trends) == 0 {
 		return
