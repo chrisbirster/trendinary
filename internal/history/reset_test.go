@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -74,6 +75,65 @@ CREATE VIEW reset_view AS SELECT id FROM reset_parent;
 		if count != 1 {
 			t.Fatalf("rebuilt table %q count = %d, want 1", name, count)
 		}
+	}
+}
+
+func TestResetDatabaseOnceSerializesConcurrentCallers(t *testing.T) {
+	store, err := Open(t.TempDir() + "/reset.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.DB().SetMaxOpenConns(4)
+	store.DB().SetMaxIdleConns(4)
+
+	ctx := context.Background()
+	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE concurrent_reset_data (id INTEGER PRIMARY KEY); INSERT INTO concurrent_reset_data(id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	type outcome struct {
+		applied bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			applied, err := ResetDatabaseOnce(ctx, store.DB(), "concurrent-clean-slate")
+			results <- outcome{applied: applied, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	wins := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.applied {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent reset winners = %d, want exactly 1", wins)
+	}
+
+	var markerCount, dataTableCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM trendinary_database_resets WHERE reset_id = ?`, "concurrent-clean-slate").Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'concurrent_reset_data'`).Scan(&dataTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if markerCount != 1 || dataTableCount != 0 {
+		t.Fatalf("marker=%d data_table=%d after concurrent reset", markerCount, dataTableCount)
 	}
 }
 
