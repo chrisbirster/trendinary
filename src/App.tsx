@@ -18,7 +18,7 @@ function Layout(props: ParentProps) {
             <a {...stylex.attrs(styles.navLink)} href="/fomo">FOMO</a>
             <a {...stylex.attrs(styles.navLink)} href="/following">Following</a>
           </nav>
-          <a {...stylex.attrs(styles.headerAction)} href="/trend/at-protocol">Search / Ask</a>
+          <a {...stylex.attrs(styles.headerAction)} href="/">Live trends</a>
         </header>
         <main {...stylex.attrs(styles.main)}>{props.children}</main>
         <footer {...stylex.attrs(styles.footer)}><span>The live dictionary of the internet.</span><span>SCAN · VIBE · WTF? · LORE · PEEP · FOMO</span></footer>
