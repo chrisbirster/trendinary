@@ -2,18 +2,47 @@
 set -euo pipefail
 
 IMAGE="${TRENDINARY_E2E_IMAGE:-trendinary:e2e}"
-CONTAINER="trendinary-e2e-$$"
+APP_CONTAINER="trendinary-e2e-app-$$"
+LIBSQL_CONTAINER="trendinary-e2e-libsql-$$"
 PORT="${TRENDINARY_E2E_PORT:-18080}"
+LIBSQL_PORT="${TRENDINARY_E2E_LIBSQL_PORT:-18084}"
+TOKEN="local-test-token"
 
 cleanup() {
-  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$APP_CONTAINER" "$LIBSQL_CONTAINER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
+docker run -d --name "$LIBSQL_CONTAINER" \
+  -p "127.0.0.1:${LIBSQL_PORT}:8080" \
+  ghcr.io/tursodatabase/libsql-server:latest >/dev/null
+
+for attempt in $(seq 1 80); do
+  if curl -sS --max-time 1 "http://127.0.0.1:${LIBSQL_PORT}/" >/dev/null 2>&1; then
+    break
+  fi
+  if ! docker inspect -f '{{.State.Running}}' "$LIBSQL_CONTAINER" 2>/dev/null | grep -q true; then
+    echo "local libSQL server exited" >&2
+    docker logs "$LIBSQL_CONTAINER" >&2 || true
+    exit 1
+  fi
+  if [ "$attempt" -eq 80 ]; then
+    echo "local libSQL server did not become reachable" >&2
+    docker logs "$LIBSQL_CONTAINER" >&2 || true
+    exit 1
+  fi
+  sleep 0.25
+done
+
+bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+
 docker build -t "$IMAGE" .
-docker run -d --name "$CONTAINER" \
+docker run -d --name "$APP_CONTAINER" \
+  --add-host host.docker.internal:host-gateway \
   -p "127.0.0.1:${PORT}:8080" \
-  -e TRENDINARY_DB_PATH=/tmp/trendinary.db \
+  -e TURSO_DATABASE_URL="ws://host.docker.internal:${LIBSQL_PORT}" \
+  -e TURSO_AUTH_TOKEN="$TOKEN" \
+  -e TRENDINARY_REQUIRE_TURSO=1 \
   -e TRENDINARY_SCANNER_DISABLED=1 \
   -e TRENDINARY_JETSTREAM_DISABLED=1 \
   -e TRENDINARY_GITHUB_DISABLED=1 \
@@ -29,14 +58,14 @@ for attempt in $(seq 1 60); do
     PLAYWRIGHT_BASE_URL="http://127.0.0.1:${PORT}" npx playwright test
     exit 0
   fi
-  if ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true; then
+  if ! docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -q true; then
     echo "Trendinary production image exited before becoming healthy" >&2
-    docker logs "$CONTAINER" >&2 || true
+    docker logs "$APP_CONTAINER" >&2 || true
     exit 1
   fi
   sleep 0.25
 done
 
 echo "Trendinary production image did not become healthy" >&2
-docker logs "$CONTAINER" >&2 || true
+docker logs "$APP_CONTAINER" >&2 || true
 exit 1
