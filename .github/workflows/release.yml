@@ -59,10 +59,14 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Verify application
-        run: npm run verify
-      - name: Verify production image
-        run: docker build -t trendinary:release .
+      - name: Verify local release gate
+        run: npm run verify:local
+      - name: Verify real libSQL and two-process Docker topology
+        run: npm run test:libsql
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify production Docker image in browser
+        run: npm run test:e2e:docker
       - name: Extract changelog release notes
         env:
           VERSION_VALUE: ${{ steps.release_meta.outputs.version }}
