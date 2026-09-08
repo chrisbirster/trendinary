@@ -2,6 +2,9 @@ package history
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -158,5 +161,27 @@ func TestResetDatabaseOnceIgnoresEmptyResetID(t *testing.T) {
 	}
 	if signals != 1 {
 		t.Fatalf("signals table count = %d, want 1", signals)
+	}
+}
+
+func TestResetRetryableConnectionErrorRecognizesClosedLibSQLStreams(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "driver sentinel", err: fmt.Errorf("wrapped: %w", driver.ErrBadConn), want: true},
+		{name: "production libsql error", err: errors.New("failed to execute SQL: stream is closed: driver: bad connection"), want: true},
+		{name: "stream closed", err: errors.New("stream is closed"), want: true},
+		{name: "ordinary SQL error", err: errors.New("no such table: signals"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resetRetryableConnectionError(tt.err); got != tt.want {
+				t.Fatalf("resetRetryableConnectionError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
