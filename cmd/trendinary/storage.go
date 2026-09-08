@@ -14,6 +14,7 @@ func openHistory() (*history.Store, string, error) {
 	databaseURL := strings.TrimSpace(os.Getenv("TURSO_DATABASE_URL"))
 	authToken := strings.TrimSpace(os.Getenv("TURSO_AUTH_TOKEN"))
 	requireTurso := os.Getenv("TRENDINARY_REQUIRE_TURSO") == "1"
+	resetCommand := isDatabaseResetCommand()
 
 	var (
 		store   *history.Store
@@ -25,7 +26,11 @@ func openHistory() (*history.Store, string, error) {
 		if authToken == "" {
 			return nil, backend, fmt.Errorf("TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL is configured")
 		}
-		store, err = history.OpenTursoExisting(databaseURL, authToken)
+		if resetCommand {
+			store, err = history.OpenTursoAdmin(databaseURL, authToken)
+		} else {
+			store, err = history.OpenTursoExisting(databaseURL, authToken)
+		}
 	} else {
 		backend = history.BackendSQLite
 		if requireTurso {
@@ -40,7 +45,7 @@ func openHistory() (*history.Store, string, error) {
 	// The explicit reset command must be able to open a database even when the
 	// schema is absent or incomplete. Every normal application command requires
 	// Atlas to have made the schema ready first.
-	if !isDatabaseResetCommand() {
+	if !resetCommand {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		verifyErr := store.VerifySchema(ctx)
 		cancel()
