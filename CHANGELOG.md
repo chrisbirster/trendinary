@@ -4,6 +4,15 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-08
+
+### Fixed
+
+- Turso startup no longer retains idle libSQL/Hrana streams created under the short-lived ping/migration context; the normal idle pool is enabled only after startup work completes.
+- The one-time production reset drains all idle Turso connections before acquiring its pinned reset connection, preventing a closed startup stream from failing the first reset-ledger statement with `stream is closed: driver: bad connection`.
+- Closed/bad libSQL connections during the reset are retried up to three times while preserving the existing atomic reset transaction, durable reset ID, and mandatory post-reset Store reopen.
+- Added regression coverage for the exact closed-stream error observed in the Fly production crash loop.
+
 ## [0.5.5] - 2026-09-07
 
 ### Fixed
