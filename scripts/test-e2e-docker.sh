@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE="${TRENDINARY_E2E_IMAGE:-trendinary:e2e}"
-CONTAINER="trendinary-e2e-${$}"
+CONTAINER="trendinary-e2e-$$"
 PORT="${TRENDINARY_E2E_PORT:-18080}"
 
 cleanup() {
