@@ -29,6 +29,10 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 	}
 	switch strings.ToLower(parsed.Scheme) {
 	case "libsql", "https", "wss":
+	case "http", "ws":
+		if !localLibSQLHost(parsed.Hostname()) {
+			return nil, fmt.Errorf("insecure Turso URL scheme %q is allowed only for localhost test servers", parsed.Scheme)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported Turso database URL scheme %q", parsed.Scheme)
 	}
@@ -69,4 +73,13 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 	// small idle pool only after all work tied to the startup context is done.
 	db.SetMaxIdleConns(2)
 	return store, nil
+}
+
+func localLibSQLHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "localhost", "127.0.0.1", "::1", "host.docker.internal":
+		return true
+	default:
+		return false
+	}
 }
