@@ -3,13 +3,17 @@ package history
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-const databaseResetTable = "trendinary_database_resets"
+const (
+	databaseResetTable      = "trendinary_database_resets"
+	resetConnectionAttempts = 3
+)
 
 type resetObject struct {
 	kind string
@@ -35,6 +39,41 @@ func ResetDatabaseOnce(ctx context.Context, db *sql.DB, resetID string) (bool, e
 		return false, nil
 	}
 
+	var lastErr error
+	for attempt := 1; attempt <= resetConnectionAttempts; attempt++ {
+		applied, err := resetDatabaseOnceAttempt(ctx, db, resetID)
+		if err == nil {
+			return applied, nil
+		}
+		if !resetRetryableConnectionError(err) {
+			return false, err
+		}
+		lastErr = err
+		if attempt == resetConnectionAttempts {
+			break
+		}
+
+		// A closed Hrana/libSQL stream can surface as driver.ErrBadConn after a
+		// pooled connection outlives the startup context that created it. The
+		// caller drains idle Turso connections before entering this function; a
+		// short retry here covers a stream that expires between acquisition and
+		// the first statement without turning a transient connection into a
+		// crash-loop.
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return false, fmt.Errorf("retry database reset after bad connection: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	return false, fmt.Errorf("database reset failed after %d fresh connection attempts: %w", resetConnectionAttempts, lastErr)
+}
+
+func resetDatabaseOnceAttempt(ctx context.Context, db *sql.DB, resetID string) (bool, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return false, fmt.Errorf("open reset connection: %w", err)
@@ -177,6 +216,18 @@ func resetLockBusy(err error) bool {
 	return strings.Contains(message, "sqlite_busy") ||
 		strings.Contains(message, "database is locked") ||
 		strings.Contains(message, "database table is locked")
+}
+
+func resetRetryableConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, driver.ErrBadConn) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "driver: bad connection") ||
+		strings.Contains(message, "stream is closed")
 }
 
 func quoteResetIdentifier(value string) string {
