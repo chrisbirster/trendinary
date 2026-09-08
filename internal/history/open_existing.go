@@ -9,13 +9,39 @@ import (
 	"time"
 
 	"github.com/tursodatabase/libsql-client-go/libsql"
+	"modernc.org/sqlite"
 )
 
 // OpenExisting opens a local SQLite database without creating or changing
-// schema. It is the runtime counterpart to Atlas: the schema must already have
-// been applied before Trendinary starts.
+// schema. Atlas owns schema creation for local runtime just as it does in
+// production.
 func OpenExisting(path string) (*Store, error) {
-	if strings.TrimSpace(path) == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("sqlite path is required")
+	}
+	connector, err := sqlite.NewConnector(path)
+	if err != nil {
+		return nil, fmt.Errorf("configure sqlite connector: %w", err)
+	}
+	db := sql.OpenDB(schemaManagedConnector{inner: connector})
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	store := &Store{db: db}
+	if err := store.configure(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	markBackend(store, BackendSQLite)
+	markExternallyManaged(store)
+	return store, nil
+}
+
+// OpenAdminExisting opens local SQLite with schema mutation enabled. It exists
+// only for explicit administrative commands such as `trendinary db reset`.
+func OpenAdminExisting(path string) (*Store, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return nil, fmt.Errorf("sqlite path is required")
 	}
 	db, err := sql.Open("sqlite", path)
@@ -30,12 +56,11 @@ func OpenExisting(path string) (*Store, error) {
 		return nil, err
 	}
 	markBackend(store, BackendSQLite)
-	markExternallyManaged(store)
 	return store, nil
 }
 
 // OpenTursoExisting opens Turso/libSQL for normal application runtime. Schema
-// DDL is suppressed at the connector boundary because Atlas owns all schema
+// DDL is intercepted at the connector boundary because Atlas owns all schema
 // creation and upgrades before the Fly deployment starts.
 func OpenTursoExisting(databaseURL, authToken string) (*Store, error) {
 	return openTursoExisting(databaseURL, authToken, true)
@@ -78,8 +103,7 @@ func openTursoExisting(databaseURL, authToken string, schemaManaged bool) (*Stor
 		return nil, fmt.Errorf("configure Turso connector: %w", err)
 	}
 	if schemaManaged {
-		db := sql.OpenDB(schemaManagedConnector{inner: connector})
-		return finishTursoOpen(db, true)
+		return finishTursoOpen(sql.OpenDB(schemaManagedConnector{inner: connector}), true)
 	}
 	return finishTursoOpen(sql.OpenDB(connector), false)
 }
