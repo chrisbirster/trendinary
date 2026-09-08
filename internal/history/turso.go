@@ -44,7 +44,11 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure Turso connector: %w", err)
 	}
-	db := sql.OpenDB(connector)
+	// Remote libSQL accepts one SQL statement per Exec request, while local
+	// SQLite has historically accepted schema scripts containing many statements.
+	// Wrap the connector so all stores sharing this *sql.DB keep identical
+	// migration semantics without each migration needing transport-specific code.
+	db := sql.OpenDB(scriptConnector{inner: connector})
 	// Keep a small pool: the scanner is write-light, and avoiding a large number
 	// of remote streams keeps the first production topology predictable. Startup
 	// ping/migrations deliberately keep no idle connections because those calls
