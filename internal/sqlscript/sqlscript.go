@@ -6,16 +6,6 @@ import (
 	"strings"
 )
 
-type Execer interface {
-	ExecContext(context.Context, string, ...any) (interfaceResult, error)
-}
-
-// interfaceResult matches database/sql.Result without importing database/sql.
-// Concrete *sql.DB and *sql.Tx values cannot satisfy a method returning a
-// distinct interface type, so Execute accepts the operation as a callback
-// instead. Use ExecuteDB for database/sql callers.
-type interfaceResult interface{}
-
 // Split separates a SQL migration script into individual statements without
 // splitting semicolons that occur inside quoted strings/identifiers or SQL
 // comments. libSQL's remote protocol accepts one statement per request, while
@@ -51,7 +41,7 @@ func Split(script string) []string {
 		}
 		if inSingle {
 			if c == '\'' {
-				if next == '\'' { // SQLite escapes single quotes by doubling them.
+				if next == '\'' {
 					i++
 					continue
 				}
