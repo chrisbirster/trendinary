@@ -36,7 +36,12 @@ func openHistory() (*history.Store, string, error) {
 		if requireTurso {
 			return nil, history.BackendTurso, fmt.Errorf("TURSO_DATABASE_URL is required when TRENDINARY_REQUIRE_TURSO=1")
 		}
-		store, err = history.OpenExisting(envString("TRENDINARY_DB_PATH", "trendinary.db"))
+		path := envString("TRENDINARY_DB_PATH", "trendinary.db")
+		if resetCommand {
+			store, err = history.OpenAdminExisting(path)
+		} else {
+			store, err = history.OpenExisting(path)
+		}
 	}
 	if err != nil {
 		return nil, backend, err
