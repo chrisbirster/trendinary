@@ -63,6 +63,14 @@ func resetAndReopenHistory(
 	resetID string,
 	reopen func() (*history.Store, error),
 ) (*history.Store, bool, error) {
+	// OpenTurso performs its startup ping/migrations under a bounded context.
+	// libSQL can leave the corresponding remote stream in database/sql's idle
+	// pool after that context is cancelled. Drain every idle connection before
+	// the destructive reset so ResetDatabaseOnce starts on a fresh Turso stream.
+	// This Store is closed immediately after the reset check, so keeping no idle
+	// connections here has no steady-state cost.
+	store.DB().SetMaxIdleConns(0)
+
 	applied, err := history.ResetDatabaseOnce(ctx, store.DB(), resetID)
 	if err != nil {
 		_ = store.Close()

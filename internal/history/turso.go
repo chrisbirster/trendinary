@@ -42,9 +42,12 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 	}
 	db := sql.OpenDB(connector)
 	// Keep a small pool: the scanner is write-light, and avoiding a large number
-	// of remote streams keeps the first production topology predictable.
+	// of remote streams keeps the first production topology predictable. Startup
+	// ping/migrations deliberately keep no idle connections because those calls
+	// run under a short-lived context; retaining their Hrana stream after the
+	// context is cancelled can hand the next caller a closed libSQL connection.
 	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	db.SetMaxIdleConns(0)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -61,5 +64,9 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+
+	// Startup connections have been closed instead of pooled. Enable the normal
+	// small idle pool only after all work tied to the startup context is done.
+	db.SetMaxIdleConns(2)
 	return store, nil
 }
