@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -60,84 +59,39 @@ func TestOpenHistoryFallsBackToLocalSQLiteForDevelopment(t *testing.T) {
 	}
 }
 
-func TestResetAndReopenHistoryReopensWinningProcess(t *testing.T) {
-	path := t.TempDir() + "/reset.db"
-	store, err := history.Open(path)
+func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
+	path := t.TempDir() + "/trendinary.db"
+	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
+	t.Setenv("TURSO_DATABASE_URL", "")
+	t.Setenv("TURSO_AUTH_TOKEN", "")
+	t.Setenv("TRENDINARY_DB_PATH", path)
+
+	first, _, err := openHistory()
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.DB().Exec(`CREATE TABLE must_survive_startup (id INTEGER PRIMARY KEY); INSERT INTO must_survive_startup(id) VALUES (1)`); err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	reopenCalls := 0
-	fresh, applied, err := resetAndReopenHistory(context.Background(), store, "winner", func() (*history.Store, error) {
-		reopenCalls++
-		return history.Open(path)
-	})
+	// This was the production footgun. Keeping the old variable in an operator's
+	// shell or deployment must be harmless forever.
+	t.Setenv("TRENDINARY_RESET_DATABASE_ID", "this-must-never-run")
+	second, _, err := openHistory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fresh.Close()
-	if !applied {
-		t.Fatal("first reset should be applied")
-	}
-	if reopenCalls != 1 {
-		t.Fatalf("reopen calls = %d, want 1", reopenCalls)
-	}
-	assertHistorySchemaPresent(t, fresh)
-}
+	defer second.Close()
 
-func TestResetAndReopenHistoryReopensProcessThatLostResetRace(t *testing.T) {
-	path := t.TempDir() + "/reset-race.db"
-	winner, err := history.Open(path)
-	if err != nil {
+	var rows int
+	if err := second.DB().QueryRow(`SELECT COUNT(*) FROM must_survive_startup`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	applied, err := history.ResetDatabaseOnce(context.Background(), winner.DB(), "shared-rollout")
-	if err != nil {
-		winner.Close()
-		t.Fatal(err)
-	}
-	if !applied {
-		winner.Close()
-		t.Fatal("winner reset should be applied")
-	}
-	if err := winner.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// This models a second Fly Machine whose Store was opened before it learned
-	// that another Machine won the reset. The reset marker is already durable,
-	// so ResetDatabaseOnce returns false; the observer must still reopen.
-	observer, err := history.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reopenCalls := 0
-	fresh, observerApplied, err := resetAndReopenHistory(context.Background(), observer, "shared-rollout", func() (*history.Store, error) {
-		reopenCalls++
-		return history.Open(path)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fresh.Close()
-	if observerApplied {
-		t.Fatal("observer should see the reset as already applied")
-	}
-	if reopenCalls != 1 {
-		t.Fatalf("observer reopen calls = %d, want 1", reopenCalls)
-	}
-	assertHistorySchemaPresent(t, fresh)
-}
-
-func assertHistorySchemaPresent(t *testing.T, store *history.Store) {
-	t.Helper()
-	for _, name := range []string{"signals", "trend_snapshots"} {
-		var count int
-		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("table %q count = %d, want 1", name, count)
-		}
+	if rows != 1 {
+		t.Fatalf("startup mutated existing data: rows=%d", rows)
 	}
 }
