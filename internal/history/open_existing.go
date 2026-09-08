@@ -34,9 +34,20 @@ func OpenExisting(path string) (*Store, error) {
 	return store, nil
 }
 
-// OpenTursoExisting opens Turso/libSQL without running any Trendinary DDL.
-// Production uses this function; Atlas owns all schema changes in CI/CD.
+// OpenTursoExisting opens Turso/libSQL for normal application runtime. Schema
+// DDL is suppressed at the connector boundary because Atlas owns all schema
+// creation and upgrades before the Fly deployment starts.
 func OpenTursoExisting(databaseURL, authToken string) (*Store, error) {
+	return openTursoExisting(databaseURL, authToken, true)
+}
+
+// OpenTursoAdmin opens the same Turso database with schema mutation enabled.
+// It is reserved for explicit administrative commands such as `db reset`.
+func OpenTursoAdmin(databaseURL, authToken string) (*Store, error) {
+	return openTursoExisting(databaseURL, authToken, false)
+}
+
+func openTursoExisting(databaseURL, authToken string, schemaManaged bool) (*Store, error) {
 	databaseURL = strings.TrimSpace(databaseURL)
 	authToken = strings.TrimSpace(authToken)
 	if databaseURL == "" {
@@ -66,7 +77,14 @@ func OpenTursoExisting(databaseURL, authToken string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure Turso connector: %w", err)
 	}
-	db := sql.OpenDB(connector)
+	if schemaManaged {
+		db := sql.OpenDB(schemaManagedConnector{inner: connector})
+		return finishTursoOpen(db, true)
+	}
+	return finishTursoOpen(sql.OpenDB(connector), false)
+}
+
+func finishTursoOpen(db *sql.DB, schemaManaged bool) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(5 * time.Minute)
@@ -80,6 +98,8 @@ func OpenTursoExisting(databaseURL, authToken string) (*Store, error) {
 
 	store := &Store{db: db}
 	markBackend(store, BackendTurso)
-	markExternallyManaged(store)
+	if schemaManaged {
+		markExternallyManaged(store)
+	}
 	return store, nil
 }
