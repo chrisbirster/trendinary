@@ -31,9 +31,19 @@ jobs:
           fi
       - name: Verify production smoke syntax
         run: bash -n .github/scripts/production-smoke.sh
+      - name: Verify local test scripts
+        run: |
+          bash -n scripts/test-libsql.sh
+          bash -n scripts/test-e2e-docker.sh
       - name: Verify Go module lock files
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - run: npm run verify
-      - run: docker build -t trendinary:ci .
+      - name: Run local release gate
+        run: npm run verify:local
+      - name: Verify real libSQL and two-process Docker topology
+        run: npm run test:libsql
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify production Docker image in browser
+        run: npm run test:e2e:docker
