@@ -55,8 +55,42 @@ type runningServer struct {
 	url  string
 }
 
-func TestBlankDatabaseBootsAndRestarts(t *testing.T) {
+func TestBlankDatabaseIsRefusedUntilSchemaIsApplied(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "blank.db")
+	cmd := exec.Command(binaryPath)
+	cmd.Dir = repoRoot
+	cmd.Env = testEnv(dbPath, "", nil)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("blank database unexpectedly started:\n%s", output)
+	}
+	if !strings.Contains(string(output), "database schema is not migrated") {
+		t.Fatalf("unexpected blank database error:\n%s", output)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	if tables != 0 {
+		t.Fatalf("runtime startup created %d application tables", tables)
+	}
+
+	applySchema(t, dbPath)
+	server := startServer(t, dbPath, nil)
+	assertHealthy(t, server.url)
+	stopServer(t, server)
+}
+
+func TestPreparedDatabaseBootsAndRestarts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prepared.db")
+	applySchema(t, dbPath)
 	first := startServer(t, dbPath, nil)
 	assertHealthy(t, first.url)
 	stopServer(t, first)
@@ -66,17 +100,24 @@ func TestBlankDatabaseBootsAndRestarts(t *testing.T) {
 	stopServer(t, second)
 }
 
-func TestTwentyRestartLoop(t *testing.T) {
+func TestTwentyRestartLoopDoesNotMutateSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "restart.db")
+	applySchema(t, dbPath)
+	before := schemaSQL(t, dbPath)
 	for i := 0; i < 20; i++ {
 		server := startServer(t, dbPath, nil)
 		assertHealthy(t, server.url)
 		stopServer(t, server)
 	}
+	after := schemaSQL(t, dbPath)
+	if before != after {
+		t.Fatalf("runtime startup changed schema\nbefore:\n%s\nafter:\n%s", before, after)
+	}
 }
 
-func TestTwoProcessesShareOneDatabaseAndBothBecomeHealthy(t *testing.T) {
+func TestTwoProcessesShareOnePreparedDatabaseAndBothBecomeHealthy(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "shared.db")
+	applySchema(t, dbPath)
 	first := startServer(t, dbPath, nil)
 	defer stopServer(t, first)
 	second := startServer(t, dbPath, nil)
@@ -87,14 +128,13 @@ func TestTwoProcessesShareOneDatabaseAndBothBecomeHealthy(t *testing.T) {
 
 func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-reset.db")
-	server := startServer(t, dbPath, nil)
-	stopServer(t, server)
+	applySchema(t, dbPath)
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE must_survive_startup (id INTEGER PRIMARY KEY); INSERT INTO must_survive_startup(id) VALUES (1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('survivor','fixture','fixture','2026-09-08T00:00:00Z')`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -102,7 +142,7 @@ func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server = startServer(t, dbPath, map[string]string{"TRENDINARY_RESET_DATABASE_ID": "legacy-footgun"})
+	server := startServer(t, dbPath, map[string]string{"TRENDINARY_RESET_DATABASE_ID": "legacy-footgun"})
 	stopServer(t, server)
 
 	db, err = sql.Open("sqlite", dbPath)
@@ -111,7 +151,7 @@ func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 	}
 	defer db.Close()
 	var rows int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM must_survive_startup`).Scan(&rows); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM signals WHERE id='survivor'`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 1 {
@@ -119,16 +159,15 @@ func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 	}
 }
 
-func TestDBResetCommandDropsDataRecreatesSchemaAndCanBoot(t *testing.T) {
+func TestDBResetDropsSchemaAndRequiresExternalMigrationBeforeBoot(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "cli-reset.db")
-	server := startServer(t, dbPath, nil)
-	stopServer(t, server)
+	applySchema(t, dbPath)
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE disposable_state (id INTEGER PRIMARY KEY); INSERT INTO disposable_state(id) VALUES (1)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('disposable','fixture','fixture','2026-09-08T00:00:00Z')`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -151,25 +190,72 @@ func TestDBResetCommandDropsDataRecreatesSchemaAndCanBoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var disposable, signals int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'disposable_state'`).Scan(&disposable); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'signals'`).Scan(&signals); err != nil {
+	var applicationTables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&applicationTables); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if disposable != 0 || signals != 1 {
-		t.Fatalf("reset result disposable=%d signals=%d", disposable, signals)
+	if applicationTables != 0 {
+		t.Fatalf("reset left %d application tables", applicationTables)
 	}
 
-	server = startServer(t, dbPath, nil)
+	cmd = exec.Command(binaryPath)
+	cmd.Dir = repoRoot
+	cmd.Env = testEnv(dbPath, "", nil)
+	output, err = cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "database schema is not migrated") {
+		t.Fatalf("runtime should refuse reset database before external migration: err=%v\n%s", err, output)
+	}
+
+	applySchema(t, dbPath)
+	server := startServer(t, dbPath, nil)
 	assertHealthy(t, server.url)
 	stopServer(t, server)
+}
+
+func applySchema(t *testing.T, dbPath string) {
+	t.Helper()
+	schema, err := os.ReadFile(filepath.Join(repoRoot, "schema", "trendinary.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(string(schema)); err != nil {
+		t.Fatalf("apply desired schema: %v", err)
+	}
+}
+
+func schemaSQL(t *testing.T, dbPath string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT type,name,COALESCE(sql,'') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out strings.Builder
+	for rows.Next() {
+		var kind, name, sqlText string
+		if err := rows.Scan(&kind, &name, &sqlText); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&out, "%s %s %s\n", kind, name, sqlText)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }
 
 func startServer(t *testing.T, dbPath string, extra map[string]string) *runningServer {
@@ -195,10 +281,15 @@ func startServer(t *testing.T, dbPath string, extra map[string]string) *runningS
 				return server
 			}
 		}
+		if server.cmd.ProcessState != nil {
+			break
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
+	if server.cmd.ProcessState == nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
 	t.Fatalf("server did not become healthy at %s\n%s", server.url, logs.String())
 	return nil
 }
