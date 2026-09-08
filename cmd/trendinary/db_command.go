@@ -31,10 +31,12 @@ func init() {
 		fmt.Fprintf(os.Stderr, "reset %s database: %v\n", backend, err)
 		os.Exit(1)
 	}
+	// The reset has already committed at this point. Some libSQL servers close a
+	// WebSocket with EOF rather than a close frame; report it without turning a
+	// successful destructive operation into a false failure.
 	if closeErr != nil {
-		fmt.Fprintf(os.Stderr, "close %s database after reset: %v\n", backend, closeErr)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "warning: close %s database after committed reset: %v\n", backend, closeErr)
 	}
-	fmt.Fprintf(os.Stdout, "Trendinary %s database reset complete.\n", backend)
+	fmt.Fprintf(os.Stdout, "Trendinary %s database reset complete. Run Atlas before starting the application.\n", backend)
 	os.Exit(0)
 }
