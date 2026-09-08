@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestStoreResetDropsApplicationStateAndRecreatesSchema(t *testing.T) {
+func TestStoreResetDropsApplicationStateWithoutRecreatingSchema(t *testing.T) {
 	store, err := Open(t.TempDir() + "/reset.db")
 	if err != nil {
 		t.Fatal(err)
@@ -35,22 +35,16 @@ CREATE VIEW reset_view AS SELECT id FROM reset_parent;
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"reset_parent", "reset_child", "reset_view", "trendinary_database_resets"} {
+	for _, name := range []string{
+		"reset_parent", "reset_child", "reset_view", "trendinary_database_resets",
+		"signals", "trend_snapshots",
+	} {
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("obsolete database object %q survived reset", name)
-		}
-	}
-	for _, name := range []string{"signals", "trend_snapshots"} {
-		var count int
-		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("rebuilt table %q count = %d, want 1", name, count)
+			t.Fatalf("database object %q survived destructive reset", name)
 		}
 	}
 }
@@ -108,15 +102,12 @@ func TestResetDatabaseSerializesTwentyConcurrentCallers(t *testing.T) {
 		}
 	}
 
-	var dataTableCount int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'concurrent_reset_data'`).Scan(&dataTableCount); err != nil {
+	var applicationTables int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&applicationTables); err != nil {
 		t.Fatal(err)
 	}
-	if dataTableCount != 0 {
-		t.Fatalf("data table survived concurrent reset: %d", dataTableCount)
-	}
-	if err := store.migrate(context.Background()); err != nil {
-		t.Fatal(err)
+	if applicationTables != 0 {
+		t.Fatalf("application tables survived concurrent reset: %d", applicationTables)
 	}
 }
 
