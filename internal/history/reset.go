@@ -17,9 +17,9 @@ type resetObject struct {
 	name string
 }
 
-// Reset drops every application-owned table and view, then recreates the
-// current history schema. It is intentionally explicit: normal application
-// startup never calls this method.
+// Reset drops every application-owned table and view. It deliberately does not
+// recreate schema: Atlas owns schema creation and upgrades, and normal
+// application startup never performs migrations.
 func (s *Store) Reset(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database is required")
@@ -31,9 +31,6 @@ func (s *Store) Reset(ctx context.Context) error {
 	s.db.SetMaxIdleConns(0)
 	if err := ResetDatabase(ctx, s.db); err != nil {
 		return err
-	}
-	if err := s.migrate(ctx); err != nil {
-		return fmt.Errorf("recreate database schema after reset: %w", err)
 	}
 	if s.Backend() == BackendTurso {
 		s.db.SetMaxIdleConns(2)
