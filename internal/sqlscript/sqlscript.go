@@ -2,9 +2,14 @@ package sqlscript
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
+
+type Execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
 
 // Split separates a SQL migration script into individual statements without
 // splitting semicolons that occur inside quoted strings/identifiers or SQL
@@ -92,11 +97,12 @@ func Split(script string) []string {
 	return statements
 }
 
-// Execute runs every statement using the provided operation. The statement
-// index is included in failures so remote migration errors are actionable.
-func Execute(ctx context.Context, script string, exec func(context.Context, string) error) error {
+// Execute runs every statement using a database/sql compatible executor. The
+// statement index is included in failures so remote migration errors are easy
+// to diagnose.
+func Execute(ctx context.Context, execer Execer, script string) error {
 	for index, statement := range Split(script) {
-		if err := exec(ctx, statement); err != nil {
+		if _, err := execer.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("statement %d: %w", index+1, err)
 		}
 	}
