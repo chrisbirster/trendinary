@@ -4,7 +4,6 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"fmt"
 	"net"
@@ -37,15 +36,17 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmp)
 	binaryPath = filepath.Join(tmp, "trendinary")
 	build := exec.Command("go", "build", "-o", binaryPath, "./cmd/trendinary")
 	build.Dir = repoRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build integration binary: %v\n%s\n", err, output)
+		_ = os.RemoveAll(tmp)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(tmp)
+	os.Exit(code)
 }
 
 type runningServer struct {
@@ -184,9 +185,10 @@ func startServer(t *testing.T, dbPath string, extra map[string]string) *runningS
 		t.Fatal(err)
 	}
 	server := &runningServer{cmd: cmd, logs: logs, url: fmt.Sprintf("http://127.0.0.1:%d", port)}
+	client := &http.Client{Timeout: 300 * time.Millisecond}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		response, err := http.Get(server.url + "/api/v1/healthz")
+		response, err := client.Get(server.url + "/api/v1/healthz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -296,5 +298,3 @@ func testEnv(dbPath, port string, extra map[string]string) []string {
 	}
 	return env
 }
-
-func unusedContext() context.Context { return context.Background() }
