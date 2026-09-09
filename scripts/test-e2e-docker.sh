@@ -4,16 +4,21 @@ set -euo pipefail
 IMAGE="${TRENDINARY_E2E_IMAGE:-trendinary:e2e}"
 APP_CONTAINER="trendinary-e2e-app-$$"
 LIBSQL_CONTAINER="trendinary-e2e-libsql-$$"
+NETWORK="trendinary-e2e-net-$$"
 PORT="${TRENDINARY_E2E_PORT:-18080}"
 LIBSQL_PORT="${TRENDINARY_E2E_LIBSQL_PORT:-18084}"
 TOKEN="local-test-token"
 
 cleanup() {
   docker rm -f "$APP_CONTAINER" "$LIBSQL_CONTAINER" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
+docker network create "$NETWORK" >/dev/null
+
 docker run -d --name "$LIBSQL_CONTAINER" \
+  --network "$NETWORK" \
   -p "127.0.0.1:${LIBSQL_PORT}:8080" \
   ghcr.io/tursodatabase/libsql-server:latest >/dev/null
 
@@ -34,13 +39,15 @@ for attempt in $(seq 1 80); do
   sleep 0.25
 done
 
-bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+TRENDINARY_ATLAS_DOCKER_NETWORK="$NETWORK" \
+TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_CONTAINER}:8080" \
+  bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
 
 docker build -t "$IMAGE" .
 docker run -d --name "$APP_CONTAINER" \
-  --add-host host.docker.internal:host-gateway \
+  --network "$NETWORK" \
   -p "127.0.0.1:${PORT}:8080" \
-  -e TURSO_DATABASE_URL="ws://host.docker.internal:${LIBSQL_PORT}" \
+  -e TURSO_DATABASE_URL="ws://${LIBSQL_CONTAINER}:8080" \
   -e TURSO_AUTH_TOKEN="$TOKEN" \
   -e TRENDINARY_REQUIRE_TURSO=1 \
   -e TRENDINARY_SCANNER_DISABLED=1 \
