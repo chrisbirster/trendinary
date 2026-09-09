@@ -30,7 +30,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
@@ -50,12 +50,15 @@ jobs:
             echo "::error::tag $RELEASE_TAG does not match VERSION ($FILE_VERSION)"
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: ariga/setup-atlas@v0
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: npm install
+          cache: npm
+      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
+      - run: npm ci
+      - name: Verify supply-chain policy
+        run: bash scripts/verify-supply-chain.sh
       - name: Verify Turso migration credentials
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
