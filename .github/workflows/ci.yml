@@ -33,6 +33,7 @@ jobs:
         run: bash -n .github/scripts/production-smoke.sh
       - name: Verify local test scripts
         run: |
+          bash -n scripts/atlas-apply-local-libsql.sh
           bash -n scripts/test-libsql.sh
           bash -n scripts/test-e2e-docker.sh
       - name: Verify Go module lock files
@@ -41,9 +42,9 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Run local release gate
         run: npm run verify:local
-      - name: Verify real libSQL and two-process Docker topology
+      - name: Verify Atlas -> real libSQL -> two runtime processes
         run: npm run test:libsql
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
-      - name: Verify production Docker image in browser
+      - name: Verify production Docker image after Atlas migration
         run: npm run test:e2e:docker
