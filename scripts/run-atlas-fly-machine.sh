@@ -49,7 +49,10 @@ done
 
 if [ -z "$MACHINE_ID" ]; then
   echo "Atlas Fly Machine was not created (fly machine run exit=$RUN_STATUS)" >&2
-  exit "${RUN_STATUS:-1}"
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    exit 1
+  fi
+  exit "$RUN_STATUS"
 fi
 
 DEADLINE=$(( $(date +%s) + TIMEOUT_SECONDS ))
