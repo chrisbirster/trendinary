@@ -15,20 +15,32 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - uses: ariga/setup-atlas@v0
-      - name: Verify Atlas production credentials
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Verify Turso Fly runtime secrets
+        shell: bash
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
-      - name: Plan production schema without applying it
+          secret_table="$(flyctl secrets list --app trendinary)"
+          for required in TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
+            if ! printf '%s\n' "$secret_table" | grep -Fq "$required"; then
+              echo "::error::Missing Fly secret ${required}. Configure Turso before releasing."
+              exit 1
+            fi
+          done
+      - name: Plan production schema inside Fly
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: atlas schema apply --env production --dry-run
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          flyctl machine run . \
+            --app trendinary \
+            --region iad \
+            --dockerfile Dockerfile.migrate \
+            --rm \
+            --name "trendinary-atlas-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --env ATLAS_MODE=plan
 
   release:
     needs: production_preflight
