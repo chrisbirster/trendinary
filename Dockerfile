@@ -1,8 +1,8 @@
 FROM node:24-alpine AS web
 WORKDIR /src
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build:web
