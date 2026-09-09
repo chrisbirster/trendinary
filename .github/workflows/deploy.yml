@@ -80,6 +80,14 @@ jobs:
           done
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - name: Re-plan production schema and enforce expand-only policy
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          atlas schema apply --env production --dry-run 2>&1 | tee atlas-plan.sql
+          python3 scripts/verify-atlas-plan.py atlas-plan.sql
       - name: Apply database schema with Atlas
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
