@@ -37,11 +37,27 @@ Vite builds the Solid 2 application into `internal/web/dist`. Go's `embed` packa
 
 The private admin wrapper executes before the SPA. `/admin/*` and `/api/v1/admin/*` therefore require server-side authorization rather than depending on hidden frontend navigation.
 
+## Database schema boundary
+
+Atlas is the only component allowed to create or evolve the application schema. The desired state is `schema/trendinary.sql` and Atlas environments live in `atlas.hcl`.
+
+```text
+explicit reset (optional) -> Atlas schema apply -> Trendinary runtime
+```
+
+Normal runtime opens an existing database through a schema-managed connection, performs a read-only compatibility check, and then does application data work. It never runs migrations. Blank or stale databases fail startup with `database schema is not migrated`.
+
+`trendinary db reset` is the only destructive application command. It uses an administrative connection, drops only the explicitly declared Trendinary-owned tables plus the obsolete reset ledger, and exits without recreating schema. Unknown/provider-owned database objects are outside that reset boundary.
+
+This separation applies to local SQLite, local libSQL release tests, and production Turso.
+
 ## Local development
 
-Run the API:
+Prepare the default `trendinary.db` with Atlas before starting the API:
 
 ```bash
+npm run db:schema:local:plan
+npm run db:schema:local:apply
 npm run dev:api
 ```
 
@@ -53,7 +69,7 @@ npm run dev
 
 Vite proxies `/api` to `http://127.0.0.1:8080`.
 
-Without Turso environment variables, local development uses `trendinary.db` through `modernc.org/sqlite`. Tests likewise use isolated local SQLite databases. This preserves fast/offline development without making local filesystem state part of the production topology.
+Without Turso environment variables, local development uses `trendinary.db` through `modernc.org/sqlite`. Tests use isolated SQLite/libSQL databases prepared from the same desired schema. Application startup never bootstraps those databases itself.
 
 Set `TRENDINARY_JETSTREAM_DISABLED=1` when local development should not connect to the live AT Protocol stream.
 
@@ -63,11 +79,13 @@ Enable local admin access with:
 TRENDINARY_ADMIN_PASSWORD='a-long-private-password' npm run dev:api
 ```
 
-To use Turso locally instead:
+To use Turso intentionally instead:
 
 ```bash
 export TURSO_DATABASE_URL='libsql://...turso.io'
 export TURSO_AUTH_TOKEN='...'
+npm run db:schema:plan
+npm run db:schema:apply
 npm run dev:api
 ```
 
@@ -79,6 +97,26 @@ npm run build:server
 ```
 
 The Dockerfile performs the same sequence in separate Node and Go build stages and emits the Fly production image. Go module lock files are verified by CI before the application build.
+
+## Production schema/deploy topology
+
+Production schema application is outside the Fly application lifecycle:
+
+```text
+release preflight: Atlas dry-run
+          ↓
+published vX.Y.Z release
+          ↓
+Atlas schema apply to Turso
+          ↓
+Fly deploy
+          ↓
+Cloudflare deploy
+          ↓
+public production smoke
+```
+
+Production schema/deploy jobs are serialized. Fly Machines therefore never race each other on DDL, and a new application release starts only after the target schema is prepared.
 
 ## Public edge
 
@@ -162,7 +200,7 @@ NewsData (optional quota) -----------+
 
 NewsData's free feed is deliberately corroborative-only: a NewsData-only cluster cannot independently become a public trend. GDELT searches a short recent window and is cached so the two-minute scanner does not translate into a request every two minutes.
 
-Direct Reddit API ingestion is not part of the active v0.2 runtime. Trendinary does not add a Reddit HTML-scraping bypass; Reddit-adjacent material can enter through TechURLs or original-publisher discovery.
+Direct Reddit API ingestion is not part of the active runtime. Trendinary does not add a Reddit HTML-scraping bypass; Reddit-adjacent material can enter through TechURLs or original-publisher discovery.
 
 See `docs/news-discovery.md`.
 
@@ -182,7 +220,7 @@ See `docs/jetstream.md` for operational details.
 
 ## Persistence
 
-Turso/libSQL is the production operational source of truth. Fly has no database volume and can be replaced/restarted without moving durable application state. The Go process uses the remote libSQL `database/sql` driver, and the private editorial store shares the same durable SQL handle while remaining a separate domain/schema.
+Turso/libSQL is the production operational source of truth. Fly has no database volume and can be replaced/restarted without moving durable application state. The Go process uses the remote libSQL `database/sql` driver, and the private editorial and Following stores share the same durable SQL handle while remaining separate application domains.
 
 Public/history storage includes:
 
@@ -195,7 +233,7 @@ Public/history storage includes:
 - durable Jetstream cursors;
 - durable daily API-quota reservations.
 
-Private editorial storage includes:
+Private/editorial/personal-radar storage includes:
 
 - discovery sources;
 - normalized/deduplicated content items;
@@ -203,7 +241,8 @@ Private editorial storage includes:
 - personal editorial state/timestamps;
 - notes and worth-sharing reactions;
 - ingestion runs;
-- newsletter issues and issue items.
+- newsletter issues and issue items;
+- Radar follows, baselines, alerts, preferences, and push subscriptions.
 
 The in-memory recent-signal store remains bounded and disposable; it exists only to make current-window clustering cheap.
 
@@ -217,4 +256,4 @@ Database recovery is a Turso concern, not a Fly-container concern. Use Turso poi
 
 R2 remains the long-lived target for raw source payloads, provenance/replay fixtures, and generated exports. It is not required to keep the production relational database durable.
 
-See `docs/turso.md` for production setup and recovery guidance.
+See `docs/turso.md`, `docs/local-release-gate.md`, and `docs/release-process.md` for operational details.
