@@ -81,7 +81,7 @@ func OpenTurso(databaseURL, authToken string) (*Store, error) {
 
 func localLibSQLHost(host string) bool {
 	switch strings.ToLower(strings.TrimSpace(host)) {
-	case "localhost", "127.0.0.1", "::1", "host.docker.internal":
+	case "localhost", "127.0.0.1", "::1", "host.docker.internal", "libsql.test":
 		return true
 	default:
 		return false
