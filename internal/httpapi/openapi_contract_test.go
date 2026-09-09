@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -44,23 +45,10 @@ func requireDocumentedResponse(t *testing.T, spec publicOpenAPI, method, templat
 	if !ok {
 		t.Fatalf("OpenAPI missing %s %s", method, template)
 	}
-	statusKey := http.StatusText(status)
-	_ = statusKey
-	code := strings.TrimSpace(strings.Split(httptest.NewRecorder().Result().Proto, " ")[0])
-	_ = code
-	code = func() string {
-		return fmtStatus(status)
-	}()
+	code := strconv.Itoa(status)
 	if _, ok := operation.Responses[code]; !ok {
 		t.Fatalf("OpenAPI %s %s does not document handler status %s", method, template, code)
 	}
-}
-
-func fmtStatus(status int) string {
-	if status < 100 || status > 999 {
-		return ""
-	}
-	return string([]byte{byte('0' + status/100), byte('0' + (status/10)%10), byte('0' + status%10)})
 }
 
 func TestOpenAPIRepresentativeHandlerStatuses(t *testing.T) {
