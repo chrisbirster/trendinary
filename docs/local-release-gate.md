@@ -6,10 +6,10 @@ Trendinary must prove the production topology locally before any release is depl
 
 Application processes do not migrate the database. Atlas is the only schema owner.
 
-The production order is:
+The production release path is:
 
 ```text
-Atlas schema apply -> Fly deploy -> production smoke
+Atlas dry-run preflight -> publish release -> Atlas schema apply -> Fly deploy -> Cloudflare deploy -> production smoke
 ```
 
 Normal `trendinary` startup opens the existing database, performs a read-only schema compatibility check, and starts serving. If Atlas has not prepared the schema, startup fails with an explicit `database schema is not migrated` error instead of creating tables itself.
@@ -24,10 +24,18 @@ Database destruction is never part of application startup. The only supported re
 trendinary db reset
 ```
 
-The command drops application-owned tables and views and exits. It deliberately does **not** recreate schema. After a reset, run Atlas before starting Trendinary:
+The command drops only the explicitly declared Trendinary-owned application tables plus the obsolete legacy reset ledger and exits. It deliberately does **not** discover-and-drop unrelated/provider objects and does **not** recreate schema.
+
+After a reset, run Atlas before starting Trendinary. For the default local SQLite database:
 
 ```bash
-atlas schema apply --env production --auto-approve
+npm run db:schema:local:apply
+```
+
+For a configured Turso database:
+
+```bash
+npm run db:schema:apply
 ```
 
 So a clean-slate recovery is always:
@@ -42,7 +50,7 @@ trendinary
 
 ## Schema changes
 
-Edit `schema/trendinary.sql` to describe the desired database. Atlas compares the current Turso schema with that desired state and generates the required SQLite/libSQL changes.
+Edit `schema/trendinary.sql` to describe the desired database. Atlas compares the current schema with that desired state and generates the required SQLite/libSQL changes.
 
 For example, changing a table from:
 
@@ -61,19 +69,23 @@ CREATE TABLE users (
 );
 ```
 
-causes Atlas to plan the compatible schema change. Review a production plan with:
+causes Atlas to plan the schema change.
+
+For the default local database:
+
+```bash
+npm run db:schema:local:plan
+npm run db:schema:local:apply
+```
+
+For production/shared Turso:
 
 ```bash
 npm run db:schema:plan
-```
-
-Apply it with:
-
-```bash
 npm run db:schema:apply
 ```
 
-Both commands require `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. The production GitHub environment carries the same two credentials so the deploy workflow can migrate Turso before Fly starts the new release.
+The Turso commands require `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. GitHub's `production` environment carries those credentials so the release preflight can dry-run the plan before tagging and the deploy workflow can apply it before Fly starts the new release.
 
 ## Fast development verification
 
@@ -100,15 +112,18 @@ The release gate performs:
 4. Process-level integration tests proving a blank DB is rejected and an externally prepared DB starts cleanly.
 5. Twenty restart cycles proving normal startup does not mutate schema.
 6. Production web/server builds.
-7. A real local libSQL server using `ghcr.io/tursodatabase/libsql-server:latest`.
+7. A real local libSQL server using `ghcr.io/tursodatabase/libsql-server:latest` on an isolated Docker network.
 8. Atlas applying `schema/trendinary.sql` to that real libSQL server.
-9. `trendinary db reset` dropping the schema without recreating it.
-10. A negative startup test proving the app refuses the reset/unmigrated database.
-11. Atlas applying the schema again.
-12. Two production Docker containers booting against that one Atlas-prepared shared database.
-13. Playwright browser tests against the actual production Docker image after Atlas migration.
+9. Runtime DDL interception plus ordinary and multi-statement DML against the Atlas-prepared libSQL database.
+10. `trendinary db reset` dropping only Trendinary-owned schema without recreating it.
+11. A negative startup test proving the app refuses the reset/unmigrated database.
+12. Atlas applying the schema again.
+13. Two production Docker containers booting against that one Atlas-prepared shared database.
+14. Playwright browser tests against the actual production Docker image after Atlas migration.
 
 The browser tests cover the empty production leaderboard, absence of prototype/demo trends, SPA deep links, and coherent trend-detail source rendering.
+
+A schema-contract unit test also keeps the runtime/reset ownership table list in lockstep with every `CREATE TABLE` in `schema/trendinary.sql`.
 
 ## Individual gates
 
@@ -123,15 +138,22 @@ npm run test:e2e:docker
 
 ## Manual localhost inspection
 
-The easiest production-like local test is the real-libSQL gate:
+Prepare the default local database and start the API with:
+
+```bash
+npm run db:schema:local:apply
+npm run dev:api
+```
+
+The easiest production-like topology test is the real-libSQL gate:
 
 ```bash
 npm run test:libsql
 ```
 
-For interactive inspection, start a local libSQL server, apply the Atlas schema, and run the production image against it. `scripts/test-e2e-docker.sh` is the executable reference for that topology.
+For interactive production-image inspection, `scripts/test-e2e-docker.sh` is the executable reference for the isolated Atlas/libSQL/application network topology.
 
-Then inspect the running app with:
+Then inspect a running app with:
 
 ```bash
 curl -fsS http://127.0.0.1:8080/api/v1/healthz | jq
@@ -143,4 +165,4 @@ For live-source inspection, enable the scanner/Jetstream and provide only the cr
 
 ## Release rule
 
-Do not deploy if any local release gate fails. An empty leaderboard is valid immediately after a clean reset. Once evidence arrives, every public trend must continue to satisfy the independent-publisher/community-actor quality gates; fake, contaminated, single-source, or unresponsive output is not acceptable.
+Do not deploy if any release gate fails. An empty leaderboard is valid immediately after a clean reset. Once evidence arrives, every public trend must continue to satisfy the independent-publisher/community-actor quality gates; fake, contaminated, single-source, or unresponsive output is not acceptable.
