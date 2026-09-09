@@ -56,7 +56,7 @@ func (c *schemaManagedConn) ExecContext(ctx context.Context, query string, args 
 }
 
 func schemaDDL(statement string) bool {
-	fields := strings.Fields(strings.TrimSpace(statement))
+	fields := strings.Fields(stripLeadingSQLComments(statement))
 	if len(fields) == 0 {
 		return false
 	}
@@ -66,6 +66,29 @@ func schemaDDL(statement string) bool {
 	default:
 		return false
 	}
+}
+
+func stripLeadingSQLComments(statement string) string {
+	remaining := strings.TrimSpace(statement)
+	for remaining != "" {
+		switch {
+		case strings.HasPrefix(remaining, "--"):
+			newline := strings.IndexByte(remaining, '\n')
+			if newline < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[newline+1:])
+		case strings.HasPrefix(remaining, "/*"):
+			end := strings.Index(remaining[2:], "*/")
+			if end < 0 {
+				return ""
+			}
+			remaining = strings.TrimSpace(remaining[end+4:])
+		default:
+			return remaining
+		}
+	}
+	return remaining
 }
 
 func execDriverConn(ctx context.Context, conn driver.Conn, query string, args []driver.NamedValue) (driver.Result, error) {
