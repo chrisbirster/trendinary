@@ -67,6 +67,21 @@ JQ
   return 1
 }
 
+check_edge_security() {
+  local headers="$workdir/edge-headers.txt"
+  echo "smoke: verify Cloudflare edge security headers"
+  "${CURL[@]}" -D "$headers" -o /dev/null "${BASE_URL}/"
+  tr -d '\r' < "$headers" > "${headers}.clean"
+
+  grep -Eiq '^x-trendinary-edge:[[:space:]]*cloudflare$' "${headers}.clean" || { echo "::error::Missing Cloudflare edge marker"; cat "${headers}.clean"; return 1; }
+  grep -Eiq '^strict-transport-security:[[:space:]]*max-age=31536000; includeSubDomains$' "${headers}.clean" || { echo "::error::Missing production HSTS"; cat "${headers}.clean"; return 1; }
+  grep -Eiq '^x-content-type-options:[[:space:]]*nosniff$' "${headers}.clean" || { echo "::error::Missing nosniff"; cat "${headers}.clean"; return 1; }
+  grep -Eiq '^x-frame-options:[[:space:]]*DENY$' "${headers}.clean" || { echo "::error::Missing DENY framing policy"; cat "${headers}.clean"; return 1; }
+  grep -Ei '^content-security-policy:' "${headers}.clean" | grep -Fq "frame-ancestors 'none'" || { echo "::error::CSP is missing frame-ancestors 'none'"; cat "${headers}.clean"; return 1; }
+  grep -Ei '^content-security-policy:' "${headers}.clean" | grep -Fq "object-src 'none'" || { echo "::error::CSP is missing object-src 'none'"; cat "${headers}.clean"; return 1; }
+}
+
+check_edge_security
 check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .following == true and .web_push == true'
 check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .database == "ready"'
 check_runtime_health
@@ -88,4 +103,4 @@ check_json "/api/v1/trends" '
 '
 check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
-echo "smoke: production API healthy; any published leaderboard entries satisfy quality invariants"
+echo "smoke: production API healthy; edge security and published trend quality invariants passed"
