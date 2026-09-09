@@ -4,16 +4,27 @@ set -euo pipefail
 PORT="${1:?usage: atlas-apply-local-libsql.sh <port> [token]}"
 TOKEN="${2:-local-test-token}"
 ATLAS_IMAGE="${TRENDINARY_ATLAS_IMAGE:-arigaio/atlas:latest}"
+TARGET="${TRENDINARY_ATLAS_LIBSQL_TARGET:-host.docker.internal:${PORT}}"
+NETWORK="${TRENDINARY_ATLAS_DOCKER_NETWORK:-}"
 
-# Atlas runs in its own container during local/CI topology tests. The target
-# libSQL server is published on the Docker host, so use host.docker.internal on
-# both Docker Desktop and Linux (host-gateway supplies the latter mapping).
+network_args=()
+host_args=(--add-host host.docker.internal:host-gateway)
+if [ -n "$NETWORK" ]; then
+  network_args=(--network "$NETWORK")
+  host_args=()
+fi
+
+# Atlas runs in its own container during local/CI topology tests. Prefer a
+# caller-provided Docker network so Atlas talks directly to the libSQL
+# container while the host-only published port remains private. The host
+# gateway fallback keeps the helper usable outside the topology tests.
 docker run --rm \
-  --add-host host.docker.internal:host-gateway \
+  "${network_args[@]}" \
+  "${host_args[@]}" \
   -v "$PWD:/workspace:ro" \
   -w /workspace \
   "$ATLAS_IMAGE" schema apply \
-    --url "libsql+ws://host.docker.internal:${PORT}?authToken=${TOKEN}" \
+    --url "libsql+ws://${TARGET}?authToken=${TOKEN}" \
     --to "file://schema/trendinary.sql" \
     --dev-url "sqlite://atlas-dev?mode=memory&_fk=1" \
     --exclude "_litestream*" \
