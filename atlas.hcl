@@ -9,7 +9,7 @@ variable "auth_token" {
 }
 
 env "production" {
-  url     = urlqueryset(var.database_url, "authToken", var.auth_token)
+  url     = "${var.database_url}?authToken=${var.auth_token}"
   dev     = "sqlite://atlas-dev?mode=memory&_fk=1"
   exclude = ["_litestream*"]
 
