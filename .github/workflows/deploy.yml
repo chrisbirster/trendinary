@@ -17,8 +17,9 @@ on:
 permissions:
   contents: read
 
-# A single production schema/deploy sequence may run at a time. Atlas finishes
-# before Fly is touched, so application machines never race each other on DDL.
+# A single production schema/deploy sequence may run at a time. Atlas runs in a
+# one-off Fly Machine that inherits the app's Turso secrets and exits before any
+# web Machine is deployed, so application startup never races schema changes.
 concurrency:
   group: trendinary-production
   cancel-in-progress: false
@@ -53,19 +54,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - uses: ariga/setup-atlas@v0
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: npm install
-      - name: Verify Turso migration credentials
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
       - name: Verify Turso Fly runtime secrets
         shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
           secret_table="$(flyctl secrets list --app trendinary)"
@@ -75,15 +69,18 @@ jobs:
               exit 1
             fi
           done
+      - name: Apply database schema with Atlas inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Apply database schema with Atlas
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          atlas schema apply --env production --auto-approve
+          flyctl machine run . \
+            --app trendinary \
+            --region iad \
+            --dockerfile Dockerfile.migrate \
+            --rm \
+            --name "trendinary-atlas-apply-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --env ATLAS_MODE=apply
       - name: Deploy Go origin to Fly.io
         run: npm run deploy:fly
         env:
