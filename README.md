@@ -11,6 +11,7 @@ It also contains a private editorial system under `/admin` for deciding what is 
 - Go 1.27 HTTP/API server
 - Turso/libSQL as the production durable database
 - local SQLite (`modernc.org/sqlite`) for development and tests
+- Atlas for declarative SQLite/libSQL schema management
 - SolidJS 2 + Solid Router
 - StyleX
 - Vite 8 + TypeScript
@@ -145,17 +146,26 @@ See `docs/news-discovery.md` for source semantics and quota behavior.
 
 ## Local development
 
-Install dependencies:
+Install dependencies and make sure the Atlas CLI is available:
 
 ```bash
 npm install
 ```
 
-Run the Go API with local SQLite:
+Prepare the default local SQLite database from the declarative schema before starting the application:
+
+```bash
+npm run db:schema:local:plan
+npm run db:schema:local:apply
+```
+
+Then run the Go API:
 
 ```bash
 npm run dev:api
 ```
+
+Normal application startup never creates or upgrades schema. If `trendinary.db` is blank or stale, startup fails with `database schema is not migrated` until Atlas has prepared it.
 
 Run Vite separately:
 
@@ -171,7 +181,7 @@ To avoid connecting to ATProto during local UI work:
 TRENDINARY_JETSTREAM_DISABLED=1 npm run dev:api
 ```
 
-You can also point local development at Turso by setting `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
+To intentionally use Turso during development, set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, review `npm run db:schema:plan`, apply it with `npm run db:schema:apply`, and then start the API.
 
 ## Verification
 
@@ -179,7 +189,13 @@ You can also point local development at Turso by setting `TURSO_DATABASE_URL` an
 npm run verify
 ```
 
-CI additionally verifies the Go module lock files and builds the production Docker image.
+For the production-topology release gate, including real libSQL, Atlas, two application containers, and browser E2E:
+
+```bash
+npm run verify:release
+```
+
+See `docs/local-release-gate.md` for the complete gate.
 
 ## Production persistence
 
@@ -191,6 +207,8 @@ TURSO_AUTH_TOKEN
 ```
 
 `fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so production startup fails closed if Turso is not configured. No Fly volume is required.
+
+Atlas is the sole owner of application schema creation and evolution. The production release path plans the desired schema before a release tag is created, then applies it to Turso before the new Fly application release starts. Trendinary application Machines only verify the prepared schema and perform normal data operations.
 
 Turso stores public trend history, stable identities, signal memberships, human quality labels, Jetstream cursors, quota state, and the private editorial database. R2 remains the archive target for raw source provenance/replay payloads rather than the primary database.
 
@@ -208,4 +226,5 @@ See `docs/turso.md` and `docs/architecture.md`.
 - `docs/editorial-pipeline.md`
 - `docs/sources/techurls.md`
 - `docs/turso.md`
+- `docs/local-release-gate.md`
 - `docs/release-process.md`
