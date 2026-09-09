@@ -11,6 +11,41 @@ import (
 
 var externallyManagedDBs sync.Map // map[*sql.DB]struct{}
 
+// applicationSchemaTables is the runtime/reset ownership boundary for the
+// declarative schema in schema/trendinary.sql. Keep this list in lockstep with
+// that file; schema_contract_test.go enforces the contract.
+var applicationSchemaTables = []string{
+	"signals",
+	"trend_snapshots",
+	"stream_cursors",
+	"trend_entities",
+	"trend_entity_terms",
+	"trend_entity_aliases",
+	"trend_signal_memberships",
+	"trend_source_observations",
+	"source_api_daily_quota",
+	"editorial_sources",
+	"content_items",
+	"content_discoveries",
+	"content_notes",
+	"ingestion_runs",
+	"newsletter_issues",
+	"newsletter_issue_items",
+	"quality_feedback",
+	"following_radars",
+	"following_follows",
+	"following_baselines",
+	"following_alerts",
+	"following_push_subscriptions",
+	"following_kv",
+}
+
+// Legacy application-owned objects are safe for the explicit reset command to
+// remove even though Atlas no longer manages them in the desired schema.
+var legacyApplicationSchemaTables = []string{
+	"trendinary_database_resets",
+}
+
 func markExternallyManaged(store *Store) {
 	if store == nil || store.db == nil {
 		return
@@ -45,31 +80,6 @@ func (s *Store) VerifySchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database is required")
 	}
-	required := []string{
-		"signals",
-		"trend_snapshots",
-		"stream_cursors",
-		"trend_entities",
-		"trend_entity_terms",
-		"trend_entity_aliases",
-		"trend_signal_memberships",
-		"trend_source_observations",
-		"source_api_daily_quota",
-		"editorial_sources",
-		"content_items",
-		"content_discoveries",
-		"content_notes",
-		"ingestion_runs",
-		"newsletter_issues",
-		"newsletter_issue_items",
-		"quality_feedback",
-		"following_radars",
-		"following_follows",
-		"following_baselines",
-		"following_alerts",
-		"following_push_subscriptions",
-		"following_kv",
-	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table'`)
 	if err != nil {
@@ -89,7 +99,7 @@ func (s *Store) VerifySchema(ctx context.Context) error {
 	}
 
 	missing := make([]string, 0)
-	for _, name := range required {
+	for _, name := range applicationSchemaTables {
 		if !found[name] {
 			missing = append(missing, name)
 		}
