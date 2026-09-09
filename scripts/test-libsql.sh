@@ -6,6 +6,7 @@ APP1_CONTAINER="trendinary-libsql-app1-$$"
 APP2_CONTAINER="trendinary-libsql-app2-$$"
 FAIL_CONTAINER="trendinary-libsql-unmigrated-$$"
 NETWORK="trendinary-libsql-net-$$"
+LIBSQL_HOST="libsql.test"
 LIBSQL_PORT="${TRENDINARY_LIBSQL_PORT:-18081}"
 APP1_PORT="${TRENDINARY_LIBSQL_APP1_PORT:-18082}"
 APP2_PORT="${TRENDINARY_LIBSQL_APP2_PORT:-18083}"
@@ -22,6 +23,7 @@ docker network create "$NETWORK" >/dev/null
 
 docker run -d --name "$LIBSQL_CONTAINER" \
   --network "$NETWORK" \
+  --network-alias "$LIBSQL_HOST" \
   -p "127.0.0.1:${LIBSQL_PORT}:8080" \
   ghcr.io/tursodatabase/libsql-server:latest >/dev/null
 
@@ -44,7 +46,7 @@ done
 
 atlas_apply() {
   TRENDINARY_ATLAS_DOCKER_NETWORK="$NETWORK" \
-  TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_CONTAINER}:8080" \
+  TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_HOST}:8080" \
     bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
 }
 
@@ -60,7 +62,7 @@ docker build -t "$IMAGE" .
 
 common_args=(
   --network "$NETWORK"
-  -e TURSO_DATABASE_URL="ws://${LIBSQL_CONTAINER}:8080"
+  -e TURSO_DATABASE_URL="ws://${LIBSQL_HOST}:8080"
   -e TURSO_AUTH_TOKEN="$TOKEN"
   -e TRENDINARY_REQUIRE_TURSO=1
   -e TRENDINARY_SCANNER_DISABLED=1
@@ -77,7 +79,7 @@ common_args=(
 # Atlas, not the application, is responsible for recreating it.
 docker run --rm \
   --network "$NETWORK" \
-  -e TURSO_DATABASE_URL="ws://${LIBSQL_CONTAINER}:8080" \
+  -e TURSO_DATABASE_URL="ws://${LIBSQL_HOST}:8080" \
   -e TURSO_AUTH_TOKEN="$TOKEN" \
   -e TRENDINARY_REQUIRE_TURSO=1 \
   "$IMAGE" db reset
