@@ -15,20 +15,27 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
-      - name: Verify Atlas production credentials
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
+      - name: Verify Turso Fly runtime secrets
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
-      - name: Plan production schema without applying it
+          secret_table="$(flyctl secrets list --app trendinary)"
+          for required in TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
+            if ! printf '%s\n' "$secret_table" | grep -Fq "$required"; then
+              echo "::error::Missing Fly secret ${required}. Configure Turso before releasing."
+              exit 1
+            fi
+          done
+      - name: Capture production Atlas plan inside Fly
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: atlas schema apply --env production --dry-run
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/run-atlas-fly-machine.sh plan 2>&1 | tee atlas-production-plan.sql
+      - name: Enforce expand-only production schema plan
+        run: python3 scripts/verify-atlas-plan.py atlas-production-plan.sql
 
   release:
     needs: production_preflight
@@ -88,8 +95,12 @@ jobs:
           git diff --exit-code -- go.mod go.sum
       - name: Verify local release gate
         run: npm run verify:local
+      - name: Verify Atlas plan policy fixtures
+        run: npm run test:atlas-policy
       - name: Verify real libSQL and two-process Docker topology
         run: npm run test:libsql
+      - name: Verify backup/restore recovery drill
+        run: npm run test:recovery
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Verify production Docker image in browser
