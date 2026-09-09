@@ -12,13 +12,8 @@ import (
 
 const resetConnectionAttempts = 20
 
-type resetObject struct {
-	kind string
-	name string
-}
-
-// Reset drops every application-owned table and view. It deliberately does not
-// recreate schema: Atlas owns schema creation and upgrades, and normal
+// Reset drops Trendinary-owned application tables only. It deliberately does
+// not recreate schema: Atlas owns schema creation and upgrades, and normal
 // application startup never performs migrations.
 func (s *Store) Reset(ctx context.Context) error {
 	if s == nil || s.db == nil {
@@ -44,6 +39,9 @@ func (s *Store) Reset(ctx context.Context) error {
 // It serializes callers with BEGIN IMMEDIATE and retries both lock contention
 // and stale remote connections. There is deliberately no reset ledger or
 // startup trigger: each direct invocation means "reset now".
+//
+// The object set is explicit. Provider-owned or otherwise unrelated tables in
+// the same SQLite/libSQL database are never discovered-and-dropped implicitly.
 func ResetDatabase(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("database is required")
@@ -102,40 +100,13 @@ func resetDatabaseAttempt(ctx context.Context, db *sql.DB) error {
 		}
 	}()
 
-	rows, err := conn.QueryContext(ctx, `
-SELECT type, name
-FROM sqlite_master
-WHERE type IN ('view', 'table')
-  AND name NOT LIKE 'sqlite_%'
-ORDER BY CASE type WHEN 'view' THEN 0 ELSE 1 END, name`)
-	if err != nil {
-		return fmt.Errorf("list reset objects: %w", err)
-	}
-	objects := make([]resetObject, 0, 64)
-	for rows.Next() {
-		var object resetObject
-		if err := rows.Scan(&object.kind, &object.name); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan reset object: %w", err)
-		}
-		objects = append(objects, object)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("list reset object rows: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close reset object rows: %w", err)
-	}
-
-	for _, object := range objects {
-		kind := strings.ToUpper(strings.TrimSpace(object.kind))
-		if kind != "TABLE" && kind != "VIEW" {
-			continue
-		}
-		statement := fmt.Sprintf("DROP %s IF EXISTS %s", kind, quoteResetIdentifier(object.name))
+	ownedTables := make([]string, 0, len(applicationSchemaTables)+len(legacyApplicationSchemaTables))
+	ownedTables = append(ownedTables, applicationSchemaTables...)
+	ownedTables = append(ownedTables, legacyApplicationSchemaTables...)
+	for _, name := range ownedTables {
+		statement := fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteResetIdentifier(name))
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("drop %s %q: %w", strings.ToLower(kind), object.name, err)
+			return fmt.Errorf("drop application table %q: %w", name, err)
 		}
 	}
 
