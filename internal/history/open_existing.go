@@ -102,10 +102,15 @@ func openTursoExisting(databaseURL, authToken string, schemaManaged bool) (*Stor
 	if err != nil {
 		return nil, fmt.Errorf("configure Turso connector: %w", err)
 	}
+	// Preserve the old libSQL transport behavior beneath the Atlas boundary:
+	// remote libSQL still requires one statement per request for ordinary DML.
+	// The outer schema-managed connector can then intercept DDL while delegating
+	// non-DDL scripts to the splitter exactly as OpenTurso historically did.
+	scripted := scriptConnector{inner: connector}
 	if schemaManaged {
-		return finishTursoOpen(sql.OpenDB(schemaManagedConnector{inner: connector}), true)
+		return finishTursoOpen(sql.OpenDB(schemaManagedConnector{inner: scripted}), true)
 	}
-	return finishTursoOpen(sql.OpenDB(connector), false)
+	return finishTursoOpen(sql.OpenDB(scripted), false)
 }
 
 func finishTursoOpen(db *sql.DB, schemaManaged bool) (*Store, error) {
