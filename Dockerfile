@@ -13,7 +13,14 @@ ARG TRENDINARY_RELEASE=dev
 ARG TRENDINARY_COMMIT_SHA=unknown
 
 COPY go.mod go.sum ./
-RUN go mod download
+# Module contents remain pinned and checksum-verified by go.sum. Retry only
+# transient transport failures from the module proxy/storage backend.
+RUN set -eu; \
+    for attempt in 1 2 3 4; do \
+      if go mod download; then exit 0; fi; \
+      if [ "$attempt" -eq 4 ]; then exit 1; fi; \
+      sleep $((attempt * 2)); \
+    done
 
 COPY cmd ./cmd
 COPY internal ./internal
