@@ -9,7 +9,29 @@ permissions:
   contents: write
 
 jobs:
+  production_preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ariga/setup-atlas@v0
+      - name: Verify Atlas production credentials
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
+          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
+      - name: Plan production schema without applying it
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: atlas schema apply --env production --dry-run
+
   release:
+    needs: production_preflight
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
