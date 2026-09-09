@@ -32,15 +32,7 @@ jobs:
       - name: Plan production schema inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          flyctl machine run . \
-            --app trendinary \
-            --region iad \
-            --dockerfile Dockerfile.migrate \
-            --rm \
-            --name "trendinary-atlas-plan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --env ATLAS_MODE=plan
+        run: bash scripts/run-atlas-fly-machine.sh plan
 
   release:
     needs: production_preflight
