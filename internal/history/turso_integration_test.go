@@ -48,6 +48,23 @@ func TestTursoRuntimeUsesAtlasPreparedSchemaWithoutDDL(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("runtime data write rows=%d", rows)
 	}
+
+	// Moving schema ownership to Atlas must not regress the transport behavior
+	// that existing Turso callers relied on: libSQL accepts one statement per
+	// request, so the inner script connector still splits ordinary DML scripts.
+	if _, err := store.DB().ExecContext(ctx, `
+INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('atlas-runtime-script-1','fixture','fixture','2026-09-08T00:00:01Z') ON CONFLICT(id) DO NOTHING;
+INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('atlas-runtime-script-2','fixture','fixture','2026-09-08T00:00:02Z') ON CONFLICT(id) DO NOTHING;
+`); err != nil {
+		t.Fatalf("runtime multi-statement DML: %v", err)
+	}
+	var scriptRows int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM signals WHERE id IN ('atlas-runtime-script-1','atlas-runtime-script-2')`).Scan(&scriptRows); err != nil {
+		t.Fatal(err)
+	}
+	if scriptRows != 2 {
+		t.Fatalf("runtime multi-statement rows=%d, want 2", scriptRows)
+	}
 }
 
 func TestTursoTwoRuntimeStoresOpenConcurrentlyAgainstPreparedLibSQL(t *testing.T) {
