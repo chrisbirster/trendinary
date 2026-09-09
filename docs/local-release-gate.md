@@ -26,7 +26,14 @@ Normal `trendinary` startup opens the existing database, performs a read-only sc
 
 The desired schema lives in `schema/trendinary.sql`. Atlas configuration lives in `atlas.hcl`.
 
-Production Atlas commands run in short-lived Fly Machines built from `Dockerfile.migrate`. Those Machines run inside the existing `trendinary` Fly app, inherit its existing `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` secrets, and are removed when Atlas exits. GitHub therefore needs only `FLY_API_TOKEN` for database migration orchestration; Turso credentials do not need to be duplicated into GitHub Actions.
+Production Atlas commands run in short-lived Fly Machines built from `Dockerfile.migrate`. Those Machines run inside the existing `trendinary` Fly app and inherit its existing `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` secrets. `scripts/run-atlas-fly-machine.sh` waits for the Atlas process exit event, checks the real exit code, and then destroys the Machine; merely reaching the Fly `started` state is never treated as migration success. GitHub therefore needs only `FLY_API_TOKEN` for database migration orchestration; Turso credentials do not need to be duplicated into GitHub Actions.
+
+An operator with an authenticated Fly CLI can run the same production-side plan/apply path explicitly:
+
+```bash
+npm run db:schema:fly:plan
+npm run db:schema:fly:apply
+```
 
 ## Database reset
 
