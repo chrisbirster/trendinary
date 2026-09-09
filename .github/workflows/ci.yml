@@ -16,16 +16,23 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.27.0"
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: ariga/setup-atlas@v0
-      - run: npm install
+          cache: npm
+      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
+      - run: npm ci
+      - name: Verify supply-chain policy
+        run: bash scripts/verify-supply-chain.sh
+      - name: Audit production npm dependencies
+        run: npm run security:node
+      - name: Audit reachable Go vulnerabilities
+        run: npm run security:go
       - name: Verify release version metadata
         run: |
           set -euo pipefail
@@ -45,6 +52,7 @@ jobs:
         run: bash -n .github/scripts/production-smoke.sh
       - name: Verify local test scripts
         run: |
+          bash -n scripts/verify-supply-chain.sh
           bash -n scripts/atlas-apply-local-libsql.sh
           bash -n scripts/test-libsql.sh
           bash -n scripts/test-e2e-docker.sh
