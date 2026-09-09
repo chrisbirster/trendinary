@@ -1,59 +1,34 @@
 # Turso production database
 
-Trendinary production uses Turso/libSQL as its durable relational database. Fly.io runs the Go origin as a stateless compute host; no Fly volume is required.
-
-## Why
-
-The scanner, Jetstream cursor, historical score baselines, stable trend identities, NewsData quota state, Following/Radar state, and private editorial workspace all need durable SQL state. Keeping that state in Turso means a Fly Machine can restart or be replaced without moving a local database file.
-
-Local development and tests still use SQLite/libSQL-compatible databases, but schema ownership is the same everywhere: Atlas prepares the database before Trendinary starts.
+Trendinary production uses Turso/libSQL as its durable relational database. Fly.io runs the Go origin as stateless compute; no Fly volume is required.
 
 ## Schema ownership
 
 `schema/trendinary.sql` is the desired application schema and `atlas.hcl` defines how Atlas applies it.
 
-The ownership boundary is strict:
-
 ```text
 trendinary db reset      # explicit destructive drop of Trendinary-owned schema only
         ↓
-Atlas schema apply       # owns CREATE / ALTER / schema evolution
+Atlas schema apply       # sole CREATE / ALTER / schema evolution owner
         ↓
 trendinary               # runtime opens existing schema; no migrations
 ```
 
-Normal application startup never creates, alters, drops, or upgrades database schema. It performs a read-only compatibility check and exits with `database schema is not migrated` when the required schema has not been prepared.
-
-The runtime connection also blocks legacy defensive DDL from reaching SQLite/libSQL. This lets older package constructors remain harmless while Atlas stays the only schema writer.
+Normal application startup never creates, alters, drops, or upgrades database schema. It performs a read-only compatibility check and exits with `database schema is not migrated` when Atlas has not prepared the required schema.
 
 ## One-time Turso setup
 
-Install and authenticate the Turso CLI:
+Install/authenticate the Turso CLI, create the database, read its URL, and create a database token:
 
 ```bash
 brew install tursodatabase/tap/turso
 turso auth login
-```
-
-Create the production database:
-
-```bash
 turso db create trendinary
-```
-
-Read its libSQL URL:
-
-```bash
 turso db show trendinary --url
-```
-
-Create a database auth token:
-
-```bash
 turso db tokens create trendinary --expiration never
 ```
 
-Store both values as Fly application secrets because the running Go service needs them for normal data access:
+Store the URL/token only as Fly application secrets:
 
 ```bash
 fly secrets set \
@@ -62,30 +37,45 @@ fly secrets set \
   -a trendinary
 ```
 
-Store the same two values as secrets in GitHub's `production` environment. GitHub Actions needs them so Atlas can plan/apply the production schema before Fly deployment.
+The normal Go application and short-lived Atlas migration Machines in the same Fly app inherit those secrets. Do **not** duplicate the Turso credentials into GitHub Actions. GitHub production workflows need `FLY_API_TOKEN` to create/inspect the migration Machines, but Atlas executes inside Fly.
 
-Do not put either credential in `fly.toml`, Git history, GitHub Actions logs, or client-side JavaScript.
+Never put Turso credentials in `fly.toml`, Git history, Actions logs, or client JavaScript.
+
+## Production migration topology
+
+`Dockerfile.migrate` packages Atlas plus the desired schema. `scripts/run-atlas-fly-machine.sh` launches one short-lived Machine inside the `trendinary` Fly app, waits for the Atlas process exit event, reads the actual exit code, and destroys the Machine afterward.
+
+Release preflight uses:
+
+```bash
+npm run db:schema:fly:plan
+```
+
+Production deployment uses the same plan again, enforces the expand-only policy, and only then runs:
+
+```bash
+npm run db:schema:fly:apply
+```
+
+Normal web Machines never participate in migration.
 
 ## Production safety
 
-`fly.toml` sets:
+`fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so production never falls back to an ephemeral local database.
 
-```text
-TRENDINARY_REQUIRE_TURSO=1
-```
+Before a release tag can be created:
 
-At startup the Go process therefore requires `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. If they are missing, startup fails. Production never falls back to a local database file.
+1. GitHub verifies Fly contains the required Turso secret names.
+2. A one-off Atlas Machine performs a production dry-run.
+3. `scripts/verify-atlas-plan.py` rejects destructive/backward-incompatible plans.
 
-The release flow adds two additional guards:
+Deployment repeats the live plan immediately before apply so drift between release preflight and deploy cannot turn an approved additive plan into an unreviewed destructive one.
 
-1. Before a release tag is created, GitHub's `production` environment is opened and Atlas performs a read-only production schema plan. Missing credentials or an invalid plan stop the release before version tagging.
-2. During deployment, the workflow verifies the Turso Fly runtime secret names, applies the schema with Atlas, deploys Fly, deploys Cloudflare, and only then runs the production smoke gate.
-
-Production schema/deploy runs are serialized so two releases cannot apply/deploy concurrently.
+Production schema/deploy operations share one concurrency lock.
 
 ## Local development
 
-The default local database is `trendinary.db`. Prepare it through the Atlas `local` environment:
+Prepare the default local `trendinary.db` through Atlas:
 
 ```bash
 npm run db:schema:local:plan
@@ -93,9 +83,7 @@ npm run db:schema:local:apply
 npm run dev:api
 ```
 
-A blank database is intentionally not bootstrapped by `npm run dev:api`.
-
-To test against Turso intentionally:
+To work directly against an intentionally configured non-production Turso database from an operator workstation:
 
 ```bash
 export TURSO_DATABASE_URL='libsql://YOUR-DATABASE.turso.io'
@@ -105,54 +93,22 @@ npm run db:schema:apply
 npm run dev:api
 ```
 
-Review the plan before applying it to any shared database.
-
 ## Explicit reset
 
-Database destruction is never a startup behavior. The only supported destructive path is the explicit command:
+Database destruction is never startup behavior. `trendinary db reset` uses an administrative connection, drops only explicitly declared Trendinary-owned objects, and exits. It never recreates schema.
 
-```bash
-trendinary db reset
-```
+After a reset, Atlas must prepare the database before Trendinary can start.
 
-For a source checkout you can use:
-
-```bash
-go run ./cmd/trendinary db reset
-```
-
-The command uses a schema-mutating administrative connection, drops only the explicitly declared Trendinary-owned application tables plus the obsolete legacy reset ledger, and exits. It does not discover-and-drop unrelated/provider tables, and it does not recreate anything.
-
-After reset, ordinary Trendinary startup must fail until Atlas reapplies the desired schema.
-
-For the default local database:
-
-```bash
-go run ./cmd/trendinary db reset
-npm run db:schema:local:apply
-npm run dev:api
-```
-
-For production/shared Turso, use the production Atlas plan/apply path and the normal release/recovery controls rather than treating reset as an application-start flag.
-
-`TRENDINARY_RESET_DATABASE_ID` is legacy and intentionally inert.
+Do not use reset as the normal production recovery mechanism.
 
 ## Recovery
 
-Use Turso point-in-time recovery for production recovery. Turso maintains recovery history according to the account plan and can restore a database from a selected point in time.
+CI proves the repository restore procedure using persistent real libSQL via `npm run test:recovery`. Production recovery is a separate operational qualification: the actual Turso account/database recovery mechanism, retention window, restored-copy validation, Atlas reconciliation, and application smoke must be exercised before v1.0.0.
 
-For an offline/exported copy, use Turso's database export or shell dump tooling rather than attempting to copy files from Fly.
-
-The local command:
-
-```bash
-trendinary backup ./trendinary-backup.db
-```
-
-uses SQLite `VACUUM INTO` and is intentionally supported only for local SQLite stores. It returns an error when the application is connected to Turso.
+See `docs/recovery.md` for the required production recovery evidence. Do not claim the production database is recoverable merely because local libSQL restore tests pass.
 
 ## R2
 
-Cloudflare R2 remains Trendinary's raw/provenance archive for source payloads, replay fixtures, and generated exports. Database durability and recovery are handled by Turso rather than a Fly-volume-to-R2 snapshot pipeline.
+Cloudflare R2 remains Trendinary's raw/provenance archive for source payloads, replay fixtures, and generated exports. Database durability/recovery is handled by Turso rather than copying files from Fly.
 
-See `docs/local-release-gate.md` for the executable Atlas/libSQL release topology and `docs/release-process.md` for the release ordering.
+See `docs/local-release-gate.md` and `docs/release-process.md` for the executable release topology.
