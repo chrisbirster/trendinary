@@ -4,6 +4,20 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-09-08
+
+### Changed
+
+- Database schema ownership moves completely out of Trendinary application startup: Atlas now owns `CREATE`, `ALTER`, and schema evolution from the declarative `schema/trendinary.sql` desired state.
+- Production deployment now verifies the release, applies the Turso schema with Atlas, then deploys Fly.io and Cloudflare before running the production smoke gate; production schema/deploy workflows are serialized.
+- `trendinary db reset` is now an explicit destructive drop-only command. It never recreates schema, and normal application startup performs only read-only schema verification and fails with `database schema is not migrated` until Atlas has prepared the database.
+- GitHub production deployments now require `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` for the Atlas step while Fly retains its own copies as application runtime secrets.
+
+### Fixed
+
+- Removed application-startup migration/reset responsibilities that could race across rolling Fly Machines against the shared Turso database.
+- Local libSQL, process-integration, and Docker/Playwright release gates now exercise the real lifecycle: Atlas prepares the schema, reset removes it, ordinary startup refuses the unmigrated database, Atlas reapplies it, and multiple non-migrating application processes start against the same prepared schema.
+
 ## [0.5.6] - 2026-09-08
 
 ### Fixed
