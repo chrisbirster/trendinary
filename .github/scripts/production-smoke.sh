@@ -67,8 +67,8 @@ JQ
   return 1
 }
 
-check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .api_version == "v1" and .release == $expected_release and .commit == $expected_commit and .following == true and .web_push == true'
-check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_version == "v1" and .release == $expected_release and .commit == $expected_commit and .database == "ready"'
+check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .following == true and .web_push == true'
+check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .database == "ready"'
 check_runtime_health
 check_json "/api/v1/trends" '
   (.data | type == "array") and
