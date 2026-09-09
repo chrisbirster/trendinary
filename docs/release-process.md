@@ -74,7 +74,7 @@ CLOUDFLARE_DEFAULT_ACCOUNT_ID
 
 The Turso values in GitHub are used by Atlas before deployment; the copies in Fly are used by the running application for normal database access. `fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so the Go process fails closed rather than using an ephemeral local database.
 
-See `docs/turso.md` for setup and schema ownership.
+See `docs/turso.md` for setup and schema ownership and `docs/recovery.md` for the restore contract.
 
 ## Preparing a release
 
@@ -91,14 +91,16 @@ Merging the release PR to `main` automatically runs the **Release** workflow.
 
 ## Release workflow ordering
 
-The release workflow deliberately checks production schema access **before** it creates a version tag:
+The release workflow deliberately checks production schema access and schema safety **before** it creates a version tag:
 
 ```text
 production environment
         ↓
 verify Turso Atlas credentials
         ↓
-Atlas schema dry-run / plan
+Atlas production dry-run / plan
+        ↓
+expand-only plan policy
         ↓
 full release verification
         ↓
@@ -109,7 +111,7 @@ create/verify GitHub Release
 production deployment
 ```
 
-The preflight prevents a missing Atlas credential or invalid production schema plan from burning a release version/tag.
+The preflight prevents a missing Atlas credential, invalid plan, or destructive/contract-style schema change from burning a release version/tag. `scripts/verify-atlas-plan.py` fails ordinary releases on destructive operations such as table/column drops, table/column renames, SQLite table-rebuild patterns, truncation, and new uniqueness constraints on existing tables. A unique constraint created together with a brand-new table is allowed.
 
 The release verification then:
 
@@ -133,41 +135,91 @@ verify GitHub Turso credentials
         ↓
 verify Fly Turso runtime secret names
         ↓
+re-plan live production schema
+        ↓
+expand-only plan policy
+        ↓
 Atlas schema apply
         ↓
 Fly deploy
         ↓
 Cloudflare deploy
         ↓
-production smoke
+production smoke + exact release identity
 ```
+
+The second plan check is deliberate: even if preflight passed earlier, production may have changed before deployment. A changed plan must still be additive before Atlas is allowed to apply it.
 
 Atlas finishes before any new Trendinary Fly Machine is started. Application Machines never perform migrations or resets during startup.
 
 A manual production redeploy is allowed only by supplying an existing published release tag.
 
-## Schema changes
+## Schema evolution: expand → deploy → contract
 
-All schema evolution starts in `schema/trendinary.sql`. Review the production plan with:
+All schema evolution starts in `schema/trendinary.sql`, but the desired state must be rolled out in compatibility phases.
+
+### 1. Expand
+
+First ship only changes that both the currently deployed binary and the next binary can tolerate. Typical expand changes are:
+
+- add a nullable column;
+- add a column with a safe default;
+- create a new table;
+- create indexes/constraints for a table that is itself new in the same plan;
+- introduce a parallel representation while continuing to read/write the old representation.
+
+Review the production plan with:
 
 ```bash
 npm run db:schema:plan
 ```
 
-Apply only through the controlled production deployment/recovery path:
+The ordinary release workflow runs the same Atlas plan against production and machine-enforces the expand-only policy.
 
-```bash
-npm run db:schema:apply
-```
+### 2. Deploy
 
-For the default local SQLite database use:
+Deploy the application that understands the expanded schema. During this phase, rolling/failed deployments remain safe because both the previous release and the new release can run against the expanded database.
 
-```bash
-npm run db:schema:local:plan
-npm run db:schema:local:apply
-```
+For data-shape changes, backfill and verify the new representation while the old representation is still available. Do not remove the old representation in the same ordinary release that introduces its replacement.
 
-`trendinary db reset` is an explicit destructive drop-only administrative command. It never recreates schema. After a reset, Atlas must prepare the database before ordinary startup can succeed.
+### 3. Contract
+
+Only after the compatibility window has closed—old application Machines are gone, background jobs no longer need the old representation, data/backfills are verified, and rollback requirements are understood—may the obsolete representation be removed or renamed.
+
+Contract/destructive schema changes are **not permitted through the ordinary release path**. They use the manual **Production schema maintenance** workflow. That workflow:
+
+1. runs only from `main` in the protected `production` environment;
+2. requires the exact confirmation phrase `APPLY DESTRUCTIVE SCHEMA` and a non-empty reason;
+3. requires the plan to actually contain a destructive/contract operation—otherwise it refuses the override and directs the operator to the ordinary release path;
+4. records the actor, commit, ref, reason, and Atlas plan in the GitHub Actions job summary/log;
+5. shares the `trendinary-production` concurrency lock with normal deploys;
+6. explicitly runs the destructive-policy override;
+7. applies Atlas;
+8. re-plans and requires convergence;
+9. runs the public production smoke against the still-running application.
+
+The override is therefore explicit and auditable; it is never silently inferred from an ordinary release.
+
+## Rollback after an Atlas expand succeeds
+
+An additive schema change is intentionally forward-compatible. If Atlas succeeds but the subsequent Fly deployment or smoke fails:
+
+1. **Do not automatically reverse the database schema.** Keep the expanded schema in place.
+2. Stop/cancel further rollout as appropriate.
+3. Redeploy the previously published application tag, or fix forward with a corrected release. The previous application must have been designed to tolerate the expanded schema.
+4. Verify `/api/v1/healthz`, `/api/v1/readyz`, runtime health, and the production smoke contract.
+5. Investigate/fix the application deployment independently of the already-applied additive schema.
+6. Leave any eventual contract cleanup for a later, explicitly approved maintenance window.
+
+Trying to automatically downgrade a shared database during a failed rolling application deployment can destroy data written by the new representation or make surviving Machines incompatible. The expand/deploy/contract discipline exists specifically to avoid that rollback trap.
+
+`trendinary db reset` remains an explicit destructive drop-only administrative command for controlled reset scenarios. It never recreates schema. After a reset, Atlas must prepare the database before ordinary startup can succeed.
+
+## Recovery qualification
+
+CI runs `scripts/test-recovery-drill.sh` against real local libSQL persistence. The drill writes runtime data, restores the database files into a new libSQL server, reconciles the restored database to the current Atlas desired schema, boots the production Docker image, checks exact release identity, and executes the deployment-critical production smoke contract.
+
+That automated drill proves the repository procedure. It does **not** by itself prove that the production Turso account has the required point-in-time recovery/export/restore capability enabled and operational. Confirming the real production account/database recovery path remains a v1 release prerequisite; see `docs/recovery.md`.
 
 ## Hotfixes
 
@@ -190,4 +242,4 @@ A release is considered complete only when all four records agree:
 3. `VERSION` / `package.json`: `X.Y.Z`
 4. `CHANGELOG.md`: dated `[X.Y.Z]` section
 
-Production is considered healthy only after the tagged release has passed Atlas apply, Fly deploy, Cloudflare deploy, and the public smoke gate.
+Production is considered healthy only after the tagged release has passed Atlas apply, Fly deploy, Cloudflare deploy, exact runtime identity verification, and the public smoke gate.
