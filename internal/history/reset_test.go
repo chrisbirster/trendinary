@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestStoreResetDropsApplicationStateWithoutRecreatingSchema(t *testing.T) {
+func TestStoreResetDropsOnlyTrendinaryOwnedSchemaWithoutRecreatingIt(t *testing.T) {
 	store, err := Open(t.TempDir() + "/reset.db")
 	if err != nil {
 		t.Fatal(err)
@@ -19,14 +19,10 @@ func TestStoreResetDropsApplicationStateWithoutRecreatingSchema(t *testing.T) {
 
 	ctx := context.Background()
 	if _, err := store.DB().ExecContext(ctx, `
-CREATE TABLE reset_parent (id INTEGER PRIMARY KEY);
-CREATE TABLE reset_child (
-  id INTEGER PRIMARY KEY,
-  parent_id INTEGER NOT NULL REFERENCES reset_parent(id)
-);
-INSERT INTO reset_parent(id) VALUES (1);
-INSERT INTO reset_child(id, parent_id) VALUES (1, 1);
-CREATE VIEW reset_view AS SELECT id FROM reset_parent;
+CREATE TABLE provider_metadata (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO provider_metadata(id, value) VALUES (1, 'keep me');
+CREATE VIEW provider_metadata_view AS SELECT id, value FROM provider_metadata;
+CREATE TABLE IF NOT EXISTS trendinary_database_resets (reset_id TEXT PRIMARY KEY);
 `); err != nil {
 		t.Fatal(err)
 	}
@@ -35,17 +31,31 @@ CREATE VIEW reset_view AS SELECT id FROM reset_parent;
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{
-		"reset_parent", "reset_child", "reset_view", "trendinary_database_resets",
-		"signals", "trend_snapshots",
-	} {
+	owned := append([]string{}, applicationSchemaTables...)
+	owned = append(owned, legacyApplicationSchemaTables...)
+	for _, name := range owned {
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("database object %q survived destructive reset", name)
+			t.Fatalf("Trendinary-owned database object %q survived destructive reset", name)
 		}
+	}
+
+	var value string
+	if err := store.DB().QueryRowContext(ctx, `SELECT value FROM provider_metadata WHERE id = 1`).Scan(&value); err != nil {
+		t.Fatalf("unrelated provider table did not survive reset: %v", err)
+	}
+	if value != "keep me" {
+		t.Fatalf("provider value = %q, want keep me", value)
+	}
+	var viewCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_metadata_view`).Scan(&viewCount); err != nil {
+		t.Fatalf("unrelated provider view did not survive reset: %v", err)
+	}
+	if viewCount != 1 {
+		t.Fatalf("provider view count = %d, want 1", viewCount)
 	}
 }
 
@@ -57,11 +67,18 @@ func TestStoreResetCanBeRepeated(t *testing.T) {
 	defer store.Close()
 
 	for i := 0; i < 10; i++ {
-		if _, err := store.DB().Exec(`CREATE TABLE IF NOT EXISTS disposable (id INTEGER PRIMARY KEY)`); err != nil {
+		if _, err := store.DB().Exec(`CREATE TABLE IF NOT EXISTS trendinary_database_resets (reset_id TEXT PRIMARY KEY)`); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Reset(context.Background()); err != nil {
 			t.Fatalf("reset %d: %v", i+1, err)
+		}
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'trendinary_database_resets'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy application table survived reset %d", i+1)
 		}
 	}
 }
@@ -75,7 +92,7 @@ func TestResetDatabaseSerializesTwentyConcurrentCallers(t *testing.T) {
 	store.DB().SetMaxOpenConns(24)
 	store.DB().SetMaxIdleConns(24)
 
-	if _, err := store.DB().Exec(`CREATE TABLE concurrent_reset_data (id INTEGER PRIMARY KEY); INSERT INTO concurrent_reset_data(id) VALUES (1)`); err != nil {
+	if _, err := store.DB().Exec(`CREATE TABLE provider_metadata (id INTEGER PRIMARY KEY); INSERT INTO provider_metadata(id) VALUES (1)`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,12 +119,23 @@ func TestResetDatabaseSerializesTwentyConcurrentCallers(t *testing.T) {
 		}
 	}
 
-	var applicationTables int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).Scan(&applicationTables); err != nil {
-		t.Fatal(err)
+	owned := append([]string{}, applicationSchemaTables...)
+	owned = append(owned, legacyApplicationSchemaTables...)
+	for _, name := range owned {
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("Trendinary-owned table %q survived concurrent reset", name)
+		}
 	}
-	if applicationTables != 0 {
-		t.Fatalf("application tables survived concurrent reset: %d", applicationTables)
+	var providerRows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM provider_metadata`).Scan(&providerRows); err != nil {
+		t.Fatalf("unrelated provider table did not survive concurrent reset: %v", err)
+	}
+	if providerRows != 1 {
+		t.Fatalf("provider rows = %d, want 1", providerRows)
 	}
 }
 
