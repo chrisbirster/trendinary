@@ -1,6 +1,6 @@
 {
   "name": "trendinary",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "type": "module",
   "engines": {
@@ -18,6 +18,8 @@
     "test:e2e:install": "playwright install chromium",
     "test:e2e": "playwright test",
     "test:e2e:docker": "bash scripts/test-e2e-docker.sh",
+    "db:schema:plan": "atlas schema apply --env production --dry-run",
+    "db:schema:apply": "atlas schema apply --env production --auto-approve",
     "build:web": "vite build",
     "build:server": "go build ./cmd/trendinary",
     "build": "npm run build:web && npm run build:server",
