@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chrisbirster/trendinary/internal/buildinfo"
 	"github.com/chrisbirster/trendinary/internal/engine"
 	"github.com/chrisbirster/trendinary/internal/following"
 	"github.com/chrisbirster/trendinary/internal/history"
@@ -30,6 +31,7 @@ type Server struct {
 	recent        *recent.Store
 	following     *following.Service
 	followingPush *following.PushSender
+	build         buildinfo.Info
 }
 
 type Option func(*Server)
@@ -37,6 +39,12 @@ type Option func(*Server)
 func WithHistory(historical *history.Store) Option {
 	return func(server *Server) {
 		server.history = historical
+	}
+}
+
+func WithBuildInfo(info buildinfo.Info) Option {
+	return func(server *Server) {
+		server.build = buildinfo.Normalize(info)
 	}
 }
 
@@ -60,6 +68,7 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 		frontend: frontend,
 		hn:       hackernews.NewClient(nil),
 		bluesky:  bluesky.NewClient(nil),
+		build:    buildinfo.Current(),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -83,6 +92,7 @@ func New(s *store.Memory, frontend http.Handler, options ...Option) http.Handler
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", server.health)
+	mux.HandleFunc("GET /api/v1/readyz", server.ready)
 	mux.HandleFunc("GET /api/v1/health/streams", server.streamHealth)
 	mux.HandleFunc("GET /api/v1/trends", server.trends)
 	mux.HandleFunc("GET /api/v1/peep", server.peep)
@@ -143,15 +153,48 @@ func runFollowingWorker(service *following.Service, status *runtimeinfo.Status) 
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"service":   "trendinary",
-		"version":   "v1",
-		"time":      time.Now().UTC().Format(time.RFC3339),
-		"history":   s.history != nil,
-		"following": s.following != nil,
-		"web_push":  s.followingPush != nil && s.followingPush.PublicKey() != "",
-	})
+	payload := s.healthIdentity()
+	payload["ok"] = true
+	payload["time"] = time.Now().UTC().Format(time.RFC3339)
+	payload["history"] = s.history != nil
+	payload["following"] = s.following != nil
+	payload["web_push"] = s.followingPush != nil && s.followingPush.PublicKey() != ""
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	payload := s.healthIdentity()
+	payload["time"] = time.Now().UTC().Format(time.RFC3339)
+	w.Header().Set("Cache-Control", "no-store")
+	if s.history == nil {
+		payload["ok"] = false
+		payload["database"] = "not_ready"
+		writeJSON(w, http.StatusServiceUnavailable, payload)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+	defer cancel()
+	if err := s.history.Ready(ctx); err != nil {
+		payload["ok"] = false
+		payload["database"] = "not_ready"
+		writeJSON(w, http.StatusServiceUnavailable, payload)
+		return
+	}
+	payload["ok"] = true
+	payload["database"] = "ready"
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) healthIdentity() map[string]any {
+	return map[string]any{
+		"service":     "trendinary",
+		"version":     s.build.APIVersion,
+		"api_version": s.build.APIVersion,
+		"release":     s.build.Release,
+		"commit":      s.build.Commit,
+	}
 }
 
 func (s *Server) streamHealth(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +326,7 @@ func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"principle": "Trendinary distinguishes political leaning from factual reliability and does not infer a source-level political label from a single article.",
-			"labels": []string{"left", "lean-left", "center", "lean-right", "right", "mixed", "not-rated"},
+			"labels":    []string{"left", "lean-left", "center", "lean-right", "right", "mixed", "not-rated"},
 			"display_rules": []string{
 				"Always display the rating provider and confidence when a political leaning label is shown.",
 				"Preserve the provider's scope, such as web-only versus TV or opinion coverage.",
@@ -298,8 +341,8 @@ func (s *Server) biasMethodology(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"version": engine.ScoreVersion,
-			"range":   "0-100",
+			"version":   engine.ScoreVersion,
+			"range":     "0-100",
 			"principle": "Score unexpected attention, not fame. V3 shifts weight from absolute attention toward velocity and independent-source breadth, then measures quality against durable human labels.",
 			"weights": map[string]float64{
 				"attention":         0.14,
@@ -309,7 +352,7 @@ func (s *Server) scoreMethodology(w http.ResponseWriter, _ *http.Request) {
 				"novelty":           0.12,
 				"confidence":        0.08,
 			},
-			"peep": "PEEP is a separate confidence-gated early-signal score emphasizing velocity, source breadth, community breadth, and novelty.",
+			"peep":        "PEEP is a separate confidence-gated early-signal score emphasizing velocity, source breadth, community breadth, and novelty.",
 			"calibration": "Private human labels feed precision, timeliness, cluster-health, naming-health, threshold recommendations, and deterministic replay evaluation.",
 		},
 	})

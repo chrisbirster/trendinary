@@ -88,7 +88,12 @@ jobs:
           set -euo pipefail
           atlas schema apply --env production --auto-approve
       - name: Deploy Go origin to Fly.io
-        run: npm run deploy:fly
+        run: |
+          set -euo pipefail
+          BUILD_SHA="$(git rev-parse HEAD)"
+          npm run deploy:fly -- \
+            --build-arg "TRENDINARY_RELEASE=$RELEASE_TAG" \
+            --build-arg "TRENDINARY_COMMIT_SHA=$BUILD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Install SST providers
@@ -102,4 +107,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_DEFAULT_ACCOUNT_ID }}
       - name: Smoke public production API
-        run: bash .github/scripts/production-smoke.sh
+        run: |
+          TRENDINARY_EXPECTED_RELEASE="$RELEASE_TAG" \
+          TRENDINARY_EXPECTED_COMMIT="$(git rev-parse HEAD)" \
+          bash .github/scripts/production-smoke.sh
