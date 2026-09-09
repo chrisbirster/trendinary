@@ -24,81 +24,59 @@ Trendinary uses a strict feature → dev → main flow so production code always
 - Pull requests target `dev`, never `main`.
 - Delete after merge when practical.
 
-Examples:
-
-```text
-feature/news-ingestion ─┐
-feature/entity-v2 ──────┼──> dev ──release PR──> main ──tag/release──> production
-feature/fomo ───────────┘
-```
-
 ## Release versioning
 
-Trendinary uses Semantic Versioning:
-
-- `MAJOR`: incompatible product/API changes once a stable 1.x contract exists.
-- `MINOR`: new product capability or substantial feature train.
-- `PATCH`: backward-compatible fixes and small improvements.
-- Pre-release versions may use `-alpha.N`, `-beta.N`, or `-rc.N` when appropriate.
-
-The repository tracks the intended release version in:
-
-- `VERSION`
-- `package.json`
-- a dated matching section in `CHANGELOG.md`
-
-CI fails if the version files disagree or the changelog section is missing.
-
-Git tags and GitHub Releases use a `v` prefix, for example `v0.5.7`.
+Trendinary uses Semantic Versioning. The intended release version must agree across `VERSION`, `package.json`, and a matching dated section in `CHANGELOG.md`. Tags and GitHub Releases use a `v` prefix.
 
 ## Database and production prerequisites
 
 Fly is stateless and production persistence is Turso/libSQL. Atlas is the sole schema owner.
 
-The Fly app `trendinary` must have these application runtime secrets:
+The Fly app `trendinary` owns the production database credentials:
 
 ```text
 TURSO_DATABASE_URL
 TURSO_AUTH_TOKEN
 ```
 
-GitHub's `production` environment must also have:
+Those credentials are not duplicated into GitHub Actions. Short-lived Atlas Machines are created inside the existing Fly app, inherit the app secrets, run one plan/apply operation, and are destroyed after their process exits.
+
+GitHub's protected `production` environment needs only the orchestration/deployment secrets:
 
 ```text
-TURSO_DATABASE_URL
-TURSO_AUTH_TOKEN
 FLY_API_TOKEN
 CLOUDFLARE_API_TOKEN
 CLOUDFLARE_DEFAULT_ACCOUNT_ID
 ```
 
-The Turso values in GitHub are used by Atlas before deployment; the copies in Fly are used by the running application for normal database access. `fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so the Go process fails closed rather than using an ephemeral local database.
+`fly.toml` sets `TRENDINARY_REQUIRE_TURSO=1`, so the Go process fails closed rather than using an ephemeral local database.
 
-See `docs/turso.md` for setup and schema ownership.
+See `docs/turso.md` for database setup and `docs/recovery.md` for recovery qualification.
 
 ## Preparing a release
 
 1. Make sure `dev` CI is green.
-2. Confirm the production Turso database, GitHub `production` environment, and Fly runtime secrets are configured.
-3. Create a small `feature/release-X.Y.Z` branch from `dev`.
-4. Update `VERSION` and `package.json` to `X.Y.Z`.
-5. Move completed entries from `CHANGELOG.md` → `[Unreleased]` into a dated `[X.Y.Z]` section.
-6. Merge that release-prep feature back into `dev` after CI passes.
-7. Open a PR from `dev` to `main` titled `Release vX.Y.Z`.
-8. Merge only after the release PR is green.
+2. Confirm the Fly Turso secrets and GitHub production deployment credentials are configured.
+3. Create `feature/release-X.Y.Z` from `dev`.
+4. Update `VERSION`, `package.json`, and `CHANGELOG.md`.
+5. Merge release prep to `dev` after CI passes.
+6. Open `dev` → `main` as `Release vX.Y.Z`.
+7. Merge only after the release PR is green.
 
-Merging the release PR to `main` automatically runs the **Release** workflow.
+Merging to `main` automatically runs the **Release** workflow.
 
 ## Release workflow ordering
 
-The release workflow deliberately checks production schema access **before** it creates a version tag:
+The release workflow checks schema access and safety before creating a version tag:
 
 ```text
 production environment
         ↓
-verify Turso Atlas credentials
+verify Fly Turso secret names
         ↓
-Atlas schema dry-run / plan
+Atlas dry-run in one-off Fly Machine
+        ↓
+expand-only plan policy
         ↓
 full release verification
         ↓
@@ -109,85 +87,90 @@ create/verify GitHub Release
 production deployment
 ```
 
-The preflight prevents a missing Atlas credential or invalid production schema plan from burning a release version/tag.
+`scripts/verify-atlas-plan.py` rejects ordinary releases containing destructive or backward-incompatible operations such as table/column drops, table/column renames, SQLite table-rebuild patterns, truncation, and new uniqueness constraints on existing tables. A unique constraint created together with a brand-new table is allowed.
 
-The release verification then:
-
-- validates SemVer and `VERSION` / `package.json` / `CHANGELOG.md` agreement;
-- verifies Go module lock files;
-- runs the repeated Go suite, race detector, process integration tests, and builds;
-- runs the real Atlas → libSQL → reset → Atlas → two-process topology gate;
-- runs Playwright against the Atlas-prepared production Docker image;
-- extracts the matching changelog release notes;
-- creates or verifies annotated tag `vX.Y.Z` at the exact `main` commit;
-- creates the GitHub Release from that changelog section.
+The release verification also runs dependency/security gates, repeated Go tests, race/integration tests, real Atlas→libSQL topology tests, the backup/restore recovery drill, and production Docker/Playwright verification.
 
 ## Production deployment ordering
 
-Deployment accepts only an existing published release tag and is serialized so two production schema/deploy sequences cannot overlap:
+Production deployment is serialized with `cancel-in-progress: false`:
 
 ```text
 verify published release tag
         ↓
-verify GitHub Turso credentials
+verify Fly Turso secret names
         ↓
-verify Fly Turso runtime secret names
+re-plan live production schema in Fly
         ↓
-Atlas schema apply
+expand-only plan policy
         ↓
-Fly deploy
+Atlas apply in one-off Fly Machine
+        ↓
+Fly application deploy
         ↓
 Cloudflare deploy
         ↓
-production smoke
+public smoke + exact release/commit identity
 ```
 
-Atlas finishes before any new Trendinary Fly Machine is started. Application Machines never perform migrations or resets during startup.
+The second plan check is deliberate: production may have changed between release preflight and deploy. A changed live plan must still be additive before Atlas can apply it.
 
-A manual production redeploy is allowed only by supplying an existing published release tag.
+Normal Trendinary application Machines never create, alter, drop, or reset schema during startup.
 
-## Schema changes
+## Schema evolution: expand → deploy → contract
 
-All schema evolution starts in `schema/trendinary.sql`. Review the production plan with:
+All schema evolution starts in `schema/trendinary.sql`, but desired-state changes must be rolled out in compatibility phases.
 
-```bash
-npm run db:schema:plan
-```
+### Expand
 
-Apply only through the controlled production deployment/recovery path:
+Ship only changes both the old and new application releases can tolerate. Examples include nullable columns, columns with safe defaults, new tables, indexes/constraints for a table created in the same plan, and parallel representations that leave the old representation usable.
 
-```bash
-npm run db:schema:apply
-```
+### Deploy
 
-For the default local SQLite database use:
+Deploy the application that understands the expanded schema. If Atlas succeeds but application deployment fails, keep the additive schema and roll back/fix the application. Do not automatically downgrade a shared database.
 
-```bash
-npm run db:schema:local:plan
-npm run db:schema:local:apply
-```
+### Contract
 
-`trendinary db reset` is an explicit destructive drop-only administrative command. It never recreates schema. After a reset, Atlas must prepare the database before ordinary startup can succeed.
+Remove or rename old representations only after old Machines/jobs are gone, backfills are verified, and rollback requirements are understood.
+
+Contract/destructive changes cannot use the normal release path. They must use the manual **Production schema maintenance** workflow. That workflow:
+
+1. runs only from `main` in the protected `production` environment;
+2. requires the exact confirmation phrase `APPLY DESTRUCTIVE SCHEMA` and a non-empty reason;
+3. requires the live Atlas plan to actually contain destructive/contract operations;
+4. records actor, commit, ref, reason, and plan in the Actions audit summary;
+5. shares the same `trendinary-production` concurrency lock as normal deploys;
+6. applies the explicitly approved plan through a one-off Fly Atlas Machine;
+7. re-plans and requires convergence;
+8. runs production smoke afterward.
+
+## Rollback after an additive Atlas apply
+
+If Atlas succeeds but Fly/Cloudflare/smoke fails:
+
+1. do not reverse the database automatically;
+2. stop the rollout;
+3. redeploy the previously published app tag or fix forward;
+4. verify `/api/v1/healthz`, `/api/v1/readyz`, runtime health, and production smoke;
+5. leave eventual contract cleanup for a later maintenance window.
+
+## Recovery qualification
+
+CI runs `scripts/test-recovery-drill.sh` against persistent local libSQL. It writes runtime data, restores the database into a fresh server, reconciles it to the current Atlas desired state, verifies sentinel data, boots the production image, verifies exact runtime identity, and executes the deployment-critical smoke contract.
+
+That proves the repository procedure. It does not prove the production Turso account has point-in-time recovery/export/restore configured and tested. The real production recovery capability must be verified before v1.0.0; see `docs/recovery.md`.
 
 ## Hotfixes
 
 For a production-critical fix:
 
-1. Branch `hotfix/*` from `main`.
-2. Bump to a new PATCH version and update `CHANGELOG.md` on the hotfix branch.
-3. Open the hotfix PR to `main` and require the same complete CI gate as a normal release.
-4. Merging the hotfix runs the production preflight, then tags/releases/deploys that PATCH version only if the preflight and release gates succeed.
-5. Immediately sync the released `main` commit back into `dev` before normal feature work continues.
-
-Hotfixes are the exception to feature → dev → main; they must never leave `dev` missing a production fix.
+1. branch `hotfix/*` from `main`;
+2. bump PATCH version/changelog when a prior tag exists;
+3. open the hotfix PR directly to `main`;
+4. require the same CI/release gates;
+5. merge only when exact-head checks are green;
+6. immediately sync the released `main` commit back into `dev`.
 
 ## Release record
 
-A release is considered complete only when all four records agree:
-
-1. GitHub Release: `vX.Y.Z`
-2. Git tag: `vX.Y.Z`
-3. `VERSION` / `package.json`: `X.Y.Z`
-4. `CHANGELOG.md`: dated `[X.Y.Z]` section
-
-Production is considered healthy only after the tagged release has passed Atlas apply, Fly deploy, Cloudflare deploy, and the public smoke gate.
+A release is complete only when GitHub Release, Git tag, `VERSION`/`package.json`, and `CHANGELOG.md` agree. Production is healthy only after Atlas apply, Fly deploy, Cloudflare deploy, exact runtime identity verification, and public smoke all pass.

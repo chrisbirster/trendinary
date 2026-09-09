@@ -48,6 +48,8 @@ jobs:
           fi
       - name: Verify Atlas local schema environment
         run: npm run db:schema:local:plan
+      - name: Verify Atlas plan safety policy
+        run: npm run test:atlas-policy
       - name: Verify production smoke syntax
         run: bash -n .github/scripts/production-smoke.sh
       - name: Verify local test scripts
@@ -56,6 +58,12 @@ jobs:
           bash -n scripts/atlas-apply-local-libsql.sh
           bash -n scripts/test-libsql.sh
           bash -n scripts/test-e2e-docker.sh
+          bash -n scripts/test-atlas-plan-policy.sh
+          bash -n scripts/test-recovery-drill.sh
+          bash -n scripts/run-atlas-fly-machine.sh
+          sh -n scripts/atlas-fly-entrypoint.sh
+      - name: Verify Fly Atlas migration image
+        run: docker build -f Dockerfile.migrate -t trendinary:atlas-migrate-test .
       - name: Verify Go module lock files
         run: |
           go mod tidy
@@ -64,6 +72,8 @@ jobs:
         run: npm run verify:local
       - name: Verify Atlas -> real libSQL -> two runtime processes
         run: npm run test:libsql
+      - name: Verify real-libSQL backup/restore recovery drill
+        run: npm run test:recovery
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Verify production Docker image after Atlas migration

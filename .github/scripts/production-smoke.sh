@@ -4,6 +4,7 @@ set -euo pipefail
 BASE_URL="${TRENDINARY_BASE_URL:-https://trendinary.com}"
 EXPECTED_RELEASE="${TRENDINARY_EXPECTED_RELEASE:-}"
 EXPECTED_COMMIT="${TRENDINARY_EXPECTED_COMMIT:-}"
+RECOVERY_MODE="${TRENDINARY_SMOKE_RECOVERY:-0}"
 CURL=(curl --fail --show-error --silent --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 30)
 
 workdir="$(mktemp -d)"
@@ -70,22 +71,28 @@ JQ
 check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .following == true and .web_push == true'
 check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_version == "v1" and ($expected_release == "" or .release == $expected_release) and ($expected_commit == "" or .commit == $expected_commit) and .database == "ready"'
 check_runtime_health
-check_json "/api/v1/trends" '
-  (.data | type == "array") and
-  all(.data[];
-    ((.slug // "") as $slug |
-      ($slug != "at-protocol" and
-       $slug != "midnight-sun" and
-       $slug != "aster-1" and
-       $slug != "that-blue-chair" and
-       $slug != "orbit-cup" and
-       $slug != "quiet-quitting-2")) and
-    ((.timeline // []) | length) >= 2 and
-    ((.aliases // []) | length) <= 12 and
-    (([.sources[]?.domain] | unique) as $domains |
-      (($domains | length) != 1 or $domains[0] != "wikipedia.org"))
-  )
-'
+
+if [ "$RECOVERY_MODE" != "1" ]; then
+  check_json "/api/v1/trends" '
+    (.data | type == "array") and
+    all(.data[];
+      ((.slug // "") as $slug |
+        ($slug != "at-protocol" and
+         $slug != "midnight-sun" and
+         $slug != "aster-1" and
+         $slug != "that-blue-chair" and
+         $slug != "orbit-cup" and
+         $slug != "quiet-quitting-2")) and
+      ((.timeline // []) | length) >= 2 and
+      ((.aliases // []) | length) <= 12 and
+      (([.sources[]?.domain] | unique) as $domains |
+        (($domains | length) != 1 or $domains[0] != "wikipedia.org"))
+    )
+  '
+else
+  echo "smoke: recovery profile skips public leaderboard quality because the restored fixture is synthetic"
+fi
+
 check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
-echo "smoke: production API healthy; any published leaderboard entries satisfy quality invariants"
+echo "smoke: production API healthy; deployment-critical health contract passed"
