@@ -38,6 +38,10 @@ var applicationSchemaTables = []string{
 	"following_alerts",
 	"following_push_subscriptions",
 	"following_kv",
+	"following_alert_context",
+	"following_alert_feedback",
+	"following_alert_delivery",
+	"following_briefing_checkpoint",
 }
 
 // Legacy application-owned objects are safe for the explicit reset command to
