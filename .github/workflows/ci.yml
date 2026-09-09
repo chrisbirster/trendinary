@@ -48,6 +48,10 @@ jobs:
           bash -n scripts/atlas-apply-local-libsql.sh
           bash -n scripts/test-libsql.sh
           bash -n scripts/test-e2e-docker.sh
+          bash -n scripts/run-atlas-fly-machine.sh
+          sh -n scripts/atlas-fly-entrypoint.sh
+      - name: Verify Fly Atlas migration image
+        run: docker build -f Dockerfile.migrate -t trendinary:atlas-migrate-test .
       - name: Verify Go module lock files
         run: |
           go mod tidy
