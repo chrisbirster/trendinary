@@ -2,5 +2,8 @@ node_modules
 dist
 .DS_Store
 *.local
+trendinary.db
+trendinary.db-shm
+trendinary.db-wal
 playwright-report
 test-results
