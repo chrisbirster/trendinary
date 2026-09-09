@@ -24,6 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - uses: ariga/setup-atlas@v0
       - run: npm install
       - name: Verify release version metadata
         run: |
@@ -38,6 +39,8 @@ jobs:
             echo "::error::CHANGELOG.md does not contain a release section for $FILE_VERSION"
             exit 1
           fi
+      - name: Verify Atlas local schema environment
+        run: npm run db:schema:local:plan
       - name: Verify production smoke syntax
         run: bash -n .github/scripts/production-smoke.sh
       - name: Verify local test scripts
