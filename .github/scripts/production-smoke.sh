@@ -2,6 +2,8 @@
 set -euo pipefail
 
 BASE_URL="${TRENDINARY_BASE_URL:-https://trendinary.com}"
+EXPECTED_RELEASE="${TRENDINARY_EXPECTED_RELEASE:-}"
+EXPECTED_COMMIT="${TRENDINARY_EXPECTED_COMMIT:-}"
 CURL=(curl --fail --show-error --silent --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 30)
 
 workdir="$(mktemp -d)"
@@ -14,7 +16,7 @@ check_json() {
 
   echo "smoke: GET ${BASE_URL}${path}"
   "${CURL[@]}" "${BASE_URL}${path}" >"$output"
-  if ! jq -e "$filter" "$output" >/dev/null; then
+  if ! jq -e --arg expected_release "$EXPECTED_RELEASE" --arg expected_commit "$EXPECTED_COMMIT" "$filter" "$output" >/dev/null; then
     echo "::error::Unexpected response from ${BASE_URL}${path}"
     jq . "$output" || cat "$output"
     return 1
@@ -65,7 +67,8 @@ JQ
   return 1
 }
 
-check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .version == "v1" and .following == true and .web_push == true'
+check_json "/api/v1/healthz" '.ok == true and .service == "trendinary" and .api_version == "v1" and .release == $expected_release and .commit == $expected_commit and .following == true and .web_push == true'
+check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_version == "v1" and .release == $expected_release and .commit == $expected_commit and .database == "ready"'
 check_runtime_health
 check_json "/api/v1/trends" '
   (.data | type == "array") and
