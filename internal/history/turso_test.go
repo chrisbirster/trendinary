@@ -36,13 +36,13 @@ func TestOpenTursoRejectsInsecureRemoteHostsBeforeNetwork(t *testing.T) {
 	}
 }
 
-func TestLocalLibSQLHostAllowsOnlyLoopbackAndDockerHost(t *testing.T) {
-	for _, host := range []string{"localhost", "127.0.0.1", "::1", "host.docker.internal"} {
+func TestLocalLibSQLHostAllowsOnlyLoopbackAndReservedTestHosts(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "::1", "host.docker.internal", "libsql.test"} {
 		if !localLibSQLHost(host) {
 			t.Fatalf("expected local host %q to be allowed", host)
 		}
 	}
-	for _, host := range []string{"example.com", "10.0.0.4", "libsql"} {
+	for _, host := range []string{"example.com", "10.0.0.4", "libsql", "libsql.example.com"} {
 		if localLibSQLHost(host) {
 			t.Fatalf("unexpected insecure host allowed: %q", host)
 		}
