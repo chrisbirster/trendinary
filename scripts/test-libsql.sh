@@ -5,6 +5,7 @@ LIBSQL_CONTAINER="trendinary-libsql-$$"
 APP1_CONTAINER="trendinary-libsql-app1-$$"
 APP2_CONTAINER="trendinary-libsql-app2-$$"
 FAIL_CONTAINER="trendinary-libsql-unmigrated-$$"
+NETWORK="trendinary-libsql-net-$$"
 LIBSQL_PORT="${TRENDINARY_LIBSQL_PORT:-18081}"
 APP1_PORT="${TRENDINARY_LIBSQL_APP1_PORT:-18082}"
 APP2_PORT="${TRENDINARY_LIBSQL_APP2_PORT:-18083}"
@@ -13,10 +14,14 @@ TOKEN="local-test-token"
 
 cleanup() {
   docker rm -f "$FAIL_CONTAINER" "$APP1_CONTAINER" "$APP2_CONTAINER" "$LIBSQL_CONTAINER" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
+docker network create "$NETWORK" >/dev/null
+
 docker run -d --name "$LIBSQL_CONTAINER" \
+  --network "$NETWORK" \
   -p "127.0.0.1:${LIBSQL_PORT}:8080" \
   ghcr.io/tursodatabase/libsql-server:latest >/dev/null
 
@@ -37,9 +42,15 @@ for attempt in $(seq 1 80); do
   sleep 0.25
 done
 
+atlas_apply() {
+  TRENDINARY_ATLAS_DOCKER_NETWORK="$NETWORK" \
+  TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_CONTAINER}:8080" \
+    bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+}
+
 # The migration process runs first. No Trendinary application process is
 # allowed to create or alter schema.
-bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+atlas_apply
 
 TRENDINARY_TEST_TURSO_URL="ws://127.0.0.1:${LIBSQL_PORT}" \
 TRENDINARY_TEST_TURSO_TOKEN="$TOKEN" \
@@ -48,8 +59,8 @@ TRENDINARY_TEST_TURSO_TOKEN="$TOKEN" \
 docker build -t "$IMAGE" .
 
 common_args=(
-  --add-host host.docker.internal:host-gateway
-  -e TURSO_DATABASE_URL="ws://host.docker.internal:${LIBSQL_PORT}"
+  --network "$NETWORK"
+  -e TURSO_DATABASE_URL="ws://${LIBSQL_CONTAINER}:8080"
   -e TURSO_AUTH_TOKEN="$TOKEN"
   -e TRENDINARY_REQUIRE_TURSO=1
   -e TRENDINARY_SCANNER_DISABLED=1
@@ -65,8 +76,8 @@ common_args=(
 # Exercise the explicit destructive command. It drops the schema and stops;
 # Atlas, not the application, is responsible for recreating it.
 docker run --rm \
-  --add-host host.docker.internal:host-gateway \
-  -e TURSO_DATABASE_URL="ws://host.docker.internal:${LIBSQL_PORT}" \
+  --network "$NETWORK" \
+  -e TURSO_DATABASE_URL="ws://${LIBSQL_CONTAINER}:8080" \
   -e TURSO_AUTH_TOKEN="$TOKEN" \
   -e TRENDINARY_REQUIRE_TURSO=1 \
   "$IMAGE" db reset
@@ -92,7 +103,7 @@ fi
 docker rm "$FAIL_CONTAINER" >/dev/null 2>&1 || true
 
 # Recreate the complete desired schema exactly once, before application start.
-bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+atlas_apply
 
 docker run -d --name "$APP1_CONTAINER" -p "127.0.0.1:${APP1_PORT}:8080" "${common_args[@]}" "$IMAGE" >/dev/null
 docker run -d --name "$APP2_CONTAINER" -p "127.0.0.1:${APP2_PORT}:8080" "${common_args[@]}" "$IMAGE" >/dev/null
