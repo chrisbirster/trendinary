@@ -28,8 +28,14 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         "SQLite rebuild / foreign-key disable",
         re.compile(r"\bPRAGMA\s+foreign_keys\s*=\s*(?:OFF|0)\b", re.IGNORECASE),
     ),
-    ("new uniqueness constraint", re.compile(r"\bCREATE\s+UNIQUE\s+INDEX\b", re.IGNORECASE)),
     ("TRUNCATE", re.compile(r"\bTRUNCATE(?:\s+TABLE)?\b", re.IGNORECASE)),
+)
+
+IDENT = r"[`\"\[]?([A-Za-z_][A-Za-z0-9_$.-]*)[`\"\]]?"
+CREATE_TABLE = re.compile(rf"\bCREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+{IDENT}", re.IGNORECASE)
+CREATE_UNIQUE_INDEX = re.compile(
+    rf"\bCREATE\s+UNIQUE\s+INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+{IDENT}\s+ON\s+{IDENT}",
+    re.IGNORECASE,
 )
 
 
@@ -52,12 +58,29 @@ def findings(plan: str) -> list[tuple[str, str]]:
     cleaned = strip_comments(plan)
     out: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
+
+    # Atlas renders UNIQUE constraints as CREATE UNIQUE INDEX statements even
+    # for tables created in the same additive plan. Those are safe because no
+    # existing rows can violate the new constraint. A new unique index on a
+    # pre-existing table remains contract-like and is blocked by default.
+    created_tables = {match.group(1).lower() for match in CREATE_TABLE.finditer(cleaned)}
+
     for label, pattern in RULES:
         for match in pattern.finditer(cleaned):
             item = (label, statement_for(cleaned, match.start()))
             if item not in seen:
                 out.append(item)
                 seen.add(item)
+
+    for match in CREATE_UNIQUE_INDEX.finditer(cleaned):
+        target_table = match.group(2).lower()
+        if target_table in created_tables:
+            continue
+        item = ("new uniqueness constraint on existing table", statement_for(cleaned, match.start()))
+        if item not in seen:
+            out.append(item)
+            seen.add(item)
+
     return out
 
 
