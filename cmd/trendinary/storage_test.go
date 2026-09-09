@@ -1,11 +1,14 @@
 package main
 
 import (
-	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/chrisbirster/trendinary/internal/history"
+	_ "modernc.org/sqlite"
 )
 
 func TestOpenHistoryRequiresTursoWhenConfigured(t *testing.T) {
@@ -44,11 +47,46 @@ func TestOpenHistoryRequiresTokenWhenURLConfigured(t *testing.T) {
 	}
 }
 
-func TestOpenHistoryFallsBackToLocalSQLiteForDevelopment(t *testing.T) {
+func TestOpenHistoryRefusesBlankSQLiteInsteadOfMigratingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blank.db")
 	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
 	t.Setenv("TURSO_DATABASE_URL", "")
 	t.Setenv("TURSO_AUTH_TOKEN", "")
-	t.Setenv("TRENDINARY_DB_PATH", t.TempDir()+"/trendinary.db")
+	t.Setenv("TRENDINARY_DB_PATH", path)
+
+	store, backend, err := openHistory()
+	if store != nil {
+		_ = store.Close()
+		t.Fatal("blank database unexpectedly opened")
+	}
+	if backend != history.BackendSQLite {
+		t.Fatalf("backend = %q", backend)
+	}
+	if err == nil || !strings.Contains(err.Error(), "database schema is not migrated") {
+		t.Fatalf("error = %v", err)
+	}
+
+	db, openErr := sql.Open("sqlite", path)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer db.Close()
+	var tables int
+	if queryErr := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).Scan(&tables); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if tables != 0 {
+		t.Fatalf("normal startup created %d application tables", tables)
+	}
+}
+
+func TestOpenHistoryUsesAtlasPreparedSQLiteForDevelopment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trendinary.db")
+	applyTestSchema(t, path)
+	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
+	t.Setenv("TURSO_DATABASE_URL", "")
+	t.Setenv("TURSO_AUTH_TOKEN", "")
+	t.Setenv("TRENDINARY_DB_PATH", path)
 
 	store, backend, err := openHistory()
 	if err != nil {
@@ -58,86 +96,64 @@ func TestOpenHistoryFallsBackToLocalSQLiteForDevelopment(t *testing.T) {
 	if backend != history.BackendSQLite {
 		t.Fatalf("backend = %q", backend)
 	}
+	if !store.ExternallyManagedSchema() {
+		t.Fatal("runtime store was not marked Atlas-managed")
+	}
 }
 
-func TestResetAndReopenHistoryReopensWinningProcess(t *testing.T) {
-	path := t.TempDir() + "/reset.db"
-	store, err := history.Open(path)
+func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trendinary.db")
+	applyTestSchema(t, path)
+	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
+	t.Setenv("TURSO_DATABASE_URL", "")
+	t.Setenv("TURSO_AUTH_TOKEN", "")
+	t.Setenv("TRENDINARY_DB_PATH", path)
+
+	first, _, err := openHistory()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Use application data rather than schema DDL: runtime schema mutation is
+	// intentionally intercepted now that Atlas owns the schema.
+	if _, err := first.DB().Exec(`INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('survivor','test','test','2026-09-08T00:00:00Z')`); err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	reopenCalls := 0
-	fresh, applied, err := resetAndReopenHistory(context.Background(), store, "winner", func() (*history.Store, error) {
-		reopenCalls++
-		return history.Open(path)
-	})
+	// This was the production footgun. Keeping the old variable in an operator's
+	// shell or deployment must be harmless forever.
+	t.Setenv("TRENDINARY_RESET_DATABASE_ID", "this-must-never-run")
+	second, _, err := openHistory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fresh.Close()
-	if !applied {
-		t.Fatal("first reset should be applied")
+	defer second.Close()
+
+	var rows int
+	if err := second.DB().QueryRow(`SELECT COUNT(*) FROM signals WHERE id='survivor'`).Scan(&rows); err != nil {
+		t.Fatal(err)
 	}
-	if reopenCalls != 1 {
-		t.Fatalf("reopen calls = %d, want 1", reopenCalls)
+	if rows != 1 {
+		t.Fatalf("startup mutated existing data: rows=%d", rows)
 	}
-	assertHistorySchemaPresent(t, fresh)
 }
 
-func TestResetAndReopenHistoryReopensProcessThatLostResetRace(t *testing.T) {
-	path := t.TempDir() + "/reset-race.db"
-	winner, err := history.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	applied, err := history.ResetDatabaseOnce(context.Background(), winner.DB(), "shared-rollout")
-	if err != nil {
-		winner.Close()
-		t.Fatal(err)
-	}
-	if !applied {
-		winner.Close()
-		t.Fatal("winner reset should be applied")
-	}
-	if err := winner.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// This models a second Fly Machine whose Store was opened before it learned
-	// that another Machine won the reset. The reset marker is already durable,
-	// so ResetDatabaseOnce returns false; the observer must still reopen.
-	observer, err := history.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reopenCalls := 0
-	fresh, observerApplied, err := resetAndReopenHistory(context.Background(), observer, "shared-rollout", func() (*history.Store, error) {
-		reopenCalls++
-		return history.Open(path)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fresh.Close()
-	if observerApplied {
-		t.Fatal("observer should see the reset as already applied")
-	}
-	if reopenCalls != 1 {
-		t.Fatalf("observer reopen calls = %d, want 1", reopenCalls)
-	}
-	assertHistorySchemaPresent(t, fresh)
-}
-
-func assertHistorySchemaPresent(t *testing.T, store *history.Store) {
+func applyTestSchema(t *testing.T, path string) {
 	t.Helper()
-	for _, name := range []string{"signals", "trend_snapshots"} {
-		var count int
-		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("table %q count = %d, want 1", name, count)
-		}
+	schemaPath := filepath.Join("..", "..", "schema", "trendinary.sql")
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(string(schema)); err != nil {
+		t.Fatalf("apply test schema: %v", err)
 	}
 }

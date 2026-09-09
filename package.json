@@ -1,6 +1,6 @@
 {
   "name": "trendinary",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,10 +11,23 @@
     "dev:api": "go run ./cmd/trendinary",
     "typecheck": "tsc --noEmit",
     "test:go": "go test ./...",
+    "test:unit": "go test -count=10 ./...",
+    "test:race": "go test -race ./...",
+    "test:integration": "go test -tags=integration ./tests/integration",
+    "test:libsql": "bash scripts/test-libsql.sh",
+    "test:e2e:install": "playwright install chromium",
+    "test:e2e": "playwright test",
+    "test:e2e:docker": "bash scripts/test-e2e-docker.sh",
+    "db:schema:local:plan": "atlas schema apply --env local --dry-run",
+    "db:schema:local:apply": "atlas schema apply --env local --auto-approve",
+    "db:schema:plan": "atlas schema apply --env production --dry-run",
+    "db:schema:apply": "atlas schema apply --env production --auto-approve",
     "build:web": "vite build",
     "build:server": "go build ./cmd/trendinary",
     "build": "npm run build:web && npm run build:server",
     "verify": "npm run typecheck && npm run test:go && npm run build",
+    "verify:local": "npm run typecheck && npm run test:unit && npm run test:race && npm run test:integration && npm run build",
+    "verify:release": "npm run verify:local && npm run test:libsql && npm run test:e2e:install && npm run test:e2e:docker",
     "deploy:fly": "flyctl deploy",
     "infra:diff": "sst diff --stage production",
     "infra:deploy": "sst deploy --stage production --print-logs"
@@ -26,6 +39,7 @@
     "solid-js": "2.0.0-rc.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.55.0",
     "@solidjs/vite-plugin": "3.0.0-next.29",
     "@stylexjs/unplugin": "0.19.0",
     "sst": "4.17.1",

@@ -14,15 +14,37 @@ func TestOpenTursoRequiresURLAndToken(t *testing.T) {
 	}
 }
 
-func TestOpenTursoRejectsUnsafeOrUnsupportedSchemesBeforeNetwork(t *testing.T) {
+func TestOpenTursoRejectsUnsupportedSchemesBeforeNetwork(t *testing.T) {
 	for _, value := range []string{
 		"file:///tmp/trendinary.db",
-		"http://example.turso.io",
-		"ws://example.turso.io",
 		"postgres://example.invalid/db",
 	} {
 		if _, err := OpenTurso(value, "token"); err == nil || !strings.Contains(err.Error(), "unsupported Turso database URL scheme") {
 			t.Fatalf("OpenTurso(%q) error = %v", value, err)
+		}
+	}
+}
+
+func TestOpenTursoRejectsInsecureRemoteHostsBeforeNetwork(t *testing.T) {
+	for _, value := range []string{
+		"http://example.turso.io",
+		"ws://example.turso.io",
+	} {
+		if _, err := OpenTurso(value, "token"); err == nil || !strings.Contains(err.Error(), "allowed only for localhost test servers") {
+			t.Fatalf("OpenTurso(%q) error = %v", value, err)
+		}
+	}
+}
+
+func TestLocalLibSQLHostAllowsOnlyLoopbackAndReservedTestHosts(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "::1", "host.docker.internal", "libsql.test"} {
+		if !localLibSQLHost(host) {
+			t.Fatalf("expected local host %q to be allowed", host)
+		}
+	}
+	for _, host := range []string{"example.com", "10.0.0.4", "libsql", "libsql.example.com"} {
+		if localLibSQLHost(host) {
+			t.Fatalf("unexpected insecure host allowed: %q", host)
 		}
 	}
 }

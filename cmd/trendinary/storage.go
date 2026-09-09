@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -15,73 +14,55 @@ func openHistory() (*history.Store, string, error) {
 	databaseURL := strings.TrimSpace(os.Getenv("TURSO_DATABASE_URL"))
 	authToken := strings.TrimSpace(os.Getenv("TURSO_AUTH_TOKEN"))
 	requireTurso := os.Getenv("TRENDINARY_REQUIRE_TURSO") == "1"
+	resetCommand := isDatabaseResetCommand()
 
+	var (
+		store   *history.Store
+		backend string
+		err     error
+	)
 	if databaseURL != "" {
+		backend = history.BackendTurso
 		if authToken == "" {
-			return nil, history.BackendTurso, fmt.Errorf("TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL is configured")
+			return nil, backend, fmt.Errorf("TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL is configured")
 		}
-		store, err := history.OpenTurso(databaseURL, authToken)
-		if err != nil {
-			return nil, history.BackendTurso, err
-		}
-		resetID := strings.TrimSpace(os.Getenv("TRENDINARY_RESET_DATABASE_ID"))
-		if resetID == "" {
-			return store, history.BackendTurso, nil
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		store, applied, resetErr := resetAndReopenHistory(ctx, store, resetID, func() (*history.Store, error) {
-			return history.OpenTurso(databaseURL, authToken)
-		})
-		cancel()
-		if resetErr != nil {
-			return nil, history.BackendTurso, fmt.Errorf("reset Turso database %q: %w", resetID, resetErr)
-		}
-		if applied {
-			slog.Warn("applied one-time Turso clean-slate reset", "reset_id", resetID)
+		if resetCommand {
+			store, err = history.OpenTursoAdmin(databaseURL, authToken)
 		} else {
-			slog.Info("observed previously applied Turso clean-slate reset; reopened schema", "reset_id", resetID)
+			store, err = history.OpenTursoExisting(databaseURL, authToken)
 		}
-		return store, history.BackendTurso, nil
+	} else {
+		backend = history.BackendSQLite
+		if requireTurso {
+			return nil, history.BackendTurso, fmt.Errorf("TURSO_DATABASE_URL is required when TRENDINARY_REQUIRE_TURSO=1")
+		}
+		path := envString("TRENDINARY_DB_PATH", "trendinary.db")
+		if resetCommand {
+			store, err = history.OpenAdminExisting(path)
+		} else {
+			store, err = history.OpenExisting(path)
+		}
 	}
-	if requireTurso {
-		return nil, history.BackendTurso, fmt.Errorf("TURSO_DATABASE_URL is required when TRENDINARY_REQUIRE_TURSO=1")
+	if err != nil {
+		return nil, backend, err
 	}
 
-	path := envString("TRENDINARY_DB_PATH", "trendinary.db")
-	store, err := history.Open(path)
-	return store, history.BackendSQLite, err
+	// The explicit reset command must be able to open a database even when the
+	// schema is absent or incomplete. Every normal application command requires
+	// Atlas to have made the schema ready first.
+	if !resetCommand {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		verifyErr := store.VerifySchema(ctx)
+		cancel()
+		if verifyErr != nil {
+			_ = store.Close()
+			return nil, backend, verifyErr
+		}
+	}
+	return store, backend, nil
 }
 
-// resetAndReopenHistory serializes the one-time reset and then always replaces
-// the caller's Store with a freshly migrated Store. Reopening is required even
-// when another process won the reset race: the losing process may have opened
-// and migrated its Store before the winner dropped those same tables.
-func resetAndReopenHistory(
-	ctx context.Context,
-	store *history.Store,
-	resetID string,
-	reopen func() (*history.Store, error),
-) (*history.Store, bool, error) {
-	// OpenTurso performs its startup ping/migrations under a bounded context.
-	// libSQL can leave the corresponding remote stream in database/sql's idle
-	// pool after that context is cancelled. Drain every idle connection before
-	// the destructive reset so ResetDatabaseOnce starts on a fresh Turso stream.
-	// This Store is closed immediately after the reset check, so keeping no idle
-	// connections here has no steady-state cost.
-	store.DB().SetMaxIdleConns(0)
-
-	applied, err := history.ResetDatabaseOnce(ctx, store.DB(), resetID)
-	if err != nil {
-		_ = store.Close()
-		return nil, false, err
-	}
-	if err := store.Close(); err != nil {
-		return nil, applied, fmt.Errorf("close reset database: %w", err)
-	}
-	fresh, err := reopen()
-	if err != nil {
-		return nil, applied, fmt.Errorf("reopen database after reset check: %w", err)
-	}
-	return fresh, applied, nil
+func isDatabaseResetCommand() bool {
+	args := os.Args[1:]
+	return len(args) == 2 && args[0] == "db" && args[1] == "reset"
 }

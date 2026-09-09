@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
-func TestResetDatabaseOnceDropsApplicationStateAndIsIdempotent(t *testing.T) {
-	store, err := Open(":memory:")
+func TestStoreResetDropsOnlyTrendinaryOwnedSchemaWithoutRecreatingIt(t *testing.T) {
+	store, err := Open(t.TempDir() + "/reset.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,153 +19,127 @@ func TestResetDatabaseOnceDropsApplicationStateAndIsIdempotent(t *testing.T) {
 
 	ctx := context.Background()
 	if _, err := store.DB().ExecContext(ctx, `
-CREATE TABLE reset_parent (id INTEGER PRIMARY KEY);
-CREATE TABLE reset_child (
-  id INTEGER PRIMARY KEY,
-  parent_id INTEGER NOT NULL REFERENCES reset_parent(id)
-);
-INSERT INTO reset_parent(id) VALUES (1);
-INSERT INTO reset_child(id, parent_id) VALUES (1, 1);
-CREATE VIEW reset_view AS SELECT id FROM reset_parent;
+CREATE TABLE provider_metadata (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO provider_metadata(id, value) VALUES (1, 'keep me');
+CREATE VIEW provider_metadata_view AS SELECT id, value FROM provider_metadata;
+CREATE TABLE IF NOT EXISTS trendinary_database_resets (reset_id TEXT PRIMARY KEY);
 `); err != nil {
 		t.Fatal(err)
 	}
 
-	applied, err := ResetDatabaseOnce(ctx, store.DB(), "test-clean-slate")
-	if err != nil {
+	if err := store.Reset(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !applied {
-		t.Fatal("first reset was not applied")
-	}
 
-	for _, name := range []string{"signals", "trend_snapshots", "reset_parent", "reset_child", "reset_view"} {
+	owned := append([]string{}, applicationSchemaTables...)
+	owned = append(owned, legacyApplicationSchemaTables...)
+	for _, name := range owned {
 		var count int
 		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, name).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != 0 {
-			t.Fatalf("database object %q survived reset", name)
+			t.Fatalf("Trendinary-owned database object %q survived destructive reset", name)
 		}
 	}
 
-	var markerCount int
-	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM trendinary_database_resets WHERE reset_id = ?`, "test-clean-slate").Scan(&markerCount); err != nil {
-		t.Fatal(err)
+	var value string
+	if err := store.DB().QueryRowContext(ctx, `SELECT value FROM provider_metadata WHERE id = 1`).Scan(&value); err != nil {
+		t.Fatalf("unrelated provider table did not survive reset: %v", err)
 	}
-	if markerCount != 1 {
-		t.Fatalf("reset marker count = %d, want 1", markerCount)
+	if value != "keep me" {
+		t.Fatalf("provider value = %q, want keep me", value)
 	}
-
-	again, err := ResetDatabaseOnce(ctx, store.DB(), "test-clean-slate")
-	if err != nil {
-		t.Fatal(err)
+	var viewCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_metadata_view`).Scan(&viewCount); err != nil {
+		t.Fatalf("unrelated provider view did not survive reset: %v", err)
 	}
-	if again {
-		t.Fatal("same reset ID was applied twice")
-	}
-
-	// Production closes/reopens the Turso Store after an applied reset. Calling
-	// migrate directly here verifies that a wiped database can be rebuilt from
-	// the current schema without removing the reset ledger.
-	if err := store.migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"signals", "trend_snapshots", databaseResetTable} {
-		var count int
-		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("rebuilt table %q count = %d, want 1", name, count)
-		}
+	if viewCount != 1 {
+		t.Fatalf("provider view count = %d, want 1", viewCount)
 	}
 }
 
-func TestResetDatabaseOnceSerializesConcurrentCallers(t *testing.T) {
-	store, err := Open(t.TempDir() + "/reset.db")
+func TestStoreResetCanBeRepeated(t *testing.T) {
+	store, err := Open(t.TempDir() + "/repeat.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	store.DB().SetMaxOpenConns(4)
-	store.DB().SetMaxIdleConns(4)
 
-	ctx := context.Background()
-	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE concurrent_reset_data (id INTEGER PRIMARY KEY); INSERT INTO concurrent_reset_data(id) VALUES (1)`); err != nil {
+	for i := 0; i < 10; i++ {
+		if _, err := store.DB().Exec(`CREATE TABLE IF NOT EXISTS trendinary_database_resets (reset_id TEXT PRIMARY KEY)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Reset(context.Background()); err != nil {
+			t.Fatalf("reset %d: %v", i+1, err)
+		}
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'trendinary_database_resets'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("legacy application table survived reset %d", i+1)
+		}
+	}
+}
+
+func TestResetDatabaseSerializesTwentyConcurrentCallers(t *testing.T) {
+	store, err := Open(t.TempDir() + "/concurrent.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	store.DB().SetMaxOpenConns(24)
+	store.DB().SetMaxIdleConns(24)
+
+	if _, err := store.DB().Exec(`CREATE TABLE provider_metadata (id INTEGER PRIMARY KEY); INSERT INTO provider_metadata(id) VALUES (1)`); err != nil {
 		t.Fatal(err)
 	}
 
-	type outcome struct {
-		applied bool
-		err     error
-	}
+	const callers = 20
 	start := make(chan struct{})
-	results := make(chan outcome, 2)
+	errs := make(chan error, callers)
 	var wg sync.WaitGroup
-	for range 2 {
+	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			applied, err := ResetDatabaseOnce(ctx, store.DB(), "concurrent-clean-slate")
-			results <- outcome{applied: applied, err: err}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			errs <- ResetDatabase(ctx, store.DB())
 		}()
 	}
 	close(start)
 	wg.Wait()
-	close(results)
-
-	wins := 0
-	for result := range results {
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		if result.applied {
-			wins++
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
-	if wins != 1 {
-		t.Fatalf("concurrent reset winners = %d, want exactly 1", wins)
-	}
 
-	var markerCount, dataTableCount int
-	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM trendinary_database_resets WHERE reset_id = ?`, "concurrent-clean-slate").Scan(&markerCount); err != nil {
-		t.Fatal(err)
+	owned := append([]string{}, applicationSchemaTables...)
+	owned = append(owned, legacyApplicationSchemaTables...)
+	for _, name := range owned {
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("Trendinary-owned table %q survived concurrent reset", name)
+		}
 	}
-	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'concurrent_reset_data'`).Scan(&dataTableCount); err != nil {
-		t.Fatal(err)
+	var providerRows int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM provider_metadata`).Scan(&providerRows); err != nil {
+		t.Fatalf("unrelated provider table did not survive concurrent reset: %v", err)
 	}
-	if markerCount != 1 || dataTableCount != 0 {
-		t.Fatalf("marker=%d data_table=%d after concurrent reset", markerCount, dataTableCount)
+	if providerRows != 1 {
+		t.Fatalf("provider rows = %d, want 1", providerRows)
 	}
 }
 
-func TestResetDatabaseOnceIgnoresEmptyResetID(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	applied, err := ResetDatabaseOnce(context.Background(), store.DB(), "   ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if applied {
-		t.Fatal("empty reset ID should be a no-op")
-	}
-
-	var signals int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'signals'`).Scan(&signals); err != nil {
-		t.Fatal(err)
-	}
-	if signals != 1 {
-		t.Fatalf("signals table count = %d, want 1", signals)
-	}
-}
-
-func TestResetRetryableConnectionErrorRecognizesClosedLibSQLStreams(t *testing.T) {
+func TestResetRetryableErrorRecognizesBusyAndClosedConnections(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
@@ -172,15 +147,16 @@ func TestResetRetryableConnectionErrorRecognizesClosedLibSQLStreams(t *testing.T
 	}{
 		{name: "driver sentinel", err: fmt.Errorf("wrapped: %w", driver.ErrBadConn), want: true},
 		{name: "production libsql error", err: errors.New("failed to execute SQL: stream is closed: driver: bad connection"), want: true},
-		{name: "stream closed", err: errors.New("stream is closed"), want: true},
+		{name: "sqlite busy", err: errors.New("database is locked (5) (SQLITE_BUSY)"), want: true},
+		{name: "table locked", err: errors.New("database table is locked"), want: true},
 		{name: "ordinary SQL error", err: errors.New("no such table: signals"), want: false},
 		{name: "nil", err: nil, want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := resetRetryableConnectionError(tt.err); got != tt.want {
-				t.Fatalf("resetRetryableConnectionError(%v) = %v, want %v", tt.err, got, tt.want)
+			if got := resetRetryableError(tt.err); got != tt.want {
+				t.Fatalf("resetRetryableError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

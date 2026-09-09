@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -20,20 +24,39 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - uses: ariga/setup-atlas@v0
       - run: npm install
       - name: Verify release version metadata
         run: |
+          set -euo pipefail
           FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           if [ "$FILE_VERSION" != "$PACKAGE_VERSION" ]; then
             echo "::error::VERSION ($FILE_VERSION) does not match package.json ($PACKAGE_VERSION)"
             exit 1
           fi
+          if ! grep -Fq "## [$FILE_VERSION]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md does not contain a release section for $FILE_VERSION"
+            exit 1
+          fi
+      - name: Verify Atlas local schema environment
+        run: npm run db:schema:local:plan
       - name: Verify production smoke syntax
         run: bash -n .github/scripts/production-smoke.sh
+      - name: Verify local test scripts
+        run: |
+          bash -n scripts/atlas-apply-local-libsql.sh
+          bash -n scripts/test-libsql.sh
+          bash -n scripts/test-e2e-docker.sh
       - name: Verify Go module lock files
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - run: npm run verify
-      - run: docker build -t trendinary:ci .
+      - name: Run local release gate
+        run: npm run verify:local
+      - name: Verify Atlas -> real libSQL -> two runtime processes
+        run: npm run test:libsql
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify production Docker image after Atlas migration
+        run: npm run test:e2e:docker
