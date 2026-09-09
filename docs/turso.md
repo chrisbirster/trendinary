@@ -53,7 +53,7 @@ Create a database auth token:
 turso db tokens create trendinary --expiration never
 ```
 
-Store both values as Fly application secrets because the running Go service needs them for normal data access:
+Store both values as Fly application secrets. The running Go service needs them for normal data access, and the short-lived Atlas migration Machines inherit the same secrets:
 
 ```bash
 fly secrets set \
@@ -62,9 +62,9 @@ fly secrets set \
   -a trendinary
 ```
 
-Store the same two values as secrets in GitHub's `production` environment. GitHub Actions needs them so Atlas can plan/apply the production schema before Fly deployment.
+Do **not** duplicate these credentials into GitHub Actions. Production schema planning and application run inside ephemeral Fly Machines in the existing `trendinary` app. GitHub only needs `FLY_API_TOKEN` to create those Machines.
 
-Do not put either credential in `fly.toml`, Git history, GitHub Actions logs, or client-side JavaScript.
+Do not put either Turso credential in `fly.toml`, Git history, GitHub Actions logs, or client-side JavaScript.
 
 ## Production safety
 
@@ -78,10 +78,10 @@ At startup the Go process therefore requires `TURSO_DATABASE_URL` and `TURSO_AUT
 
 The release flow adds two additional guards:
 
-1. Before a release tag is created, GitHub's `production` environment is opened and Atlas performs a read-only production schema plan. Missing credentials or an invalid plan stop the release before version tagging.
-2. During deployment, the workflow verifies the Turso Fly runtime secret names, applies the schema with Atlas, deploys Fly, deploys Cloudflare, and only then runs the production smoke gate.
+1. Before a release tag is created, GitHub verifies the required Turso secret names exist on the `trendinary` Fly app, then launches a one-off Fly Machine from `Dockerfile.migrate` with `ATLAS_MODE=plan`. The Machine inherits the app secrets, performs `atlas schema apply --env production --dry-run`, and is removed when it exits. A failed plan stops the release before tagging.
+2. During deployment, another one-off Fly Machine runs Atlas with `ATLAS_MODE=apply`. Only after it exits successfully does the workflow deploy the Go origin, deploy Cloudflare, and run the production smoke gate.
 
-Production schema/deploy runs are serialized so two releases cannot apply/deploy concurrently.
+Production schema/deploy runs are serialized so two releases cannot apply/deploy concurrently. Normal web Machines never participate in database migration.
 
 ## Local development
 
@@ -95,7 +95,7 @@ npm run dev:api
 
 A blank database is intentionally not bootstrapped by `npm run dev:api`.
 
-To test against Turso intentionally:
+To test against Turso intentionally from an operator workstation:
 
 ```bash
 export TURSO_DATABASE_URL='libsql://YOUR-DATABASE.turso.io'
@@ -133,7 +133,7 @@ npm run db:schema:local:apply
 npm run dev:api
 ```
 
-For production/shared Turso, use the production Atlas plan/apply path and the normal release/recovery controls rather than treating reset as an application-start flag.
+For production/shared Turso, stop the web Machines before an intentional clean-slate reset, run the explicit reset in an authorized administrative execution context, then run the same one-off Atlas apply Machine used by deployment before starting the application again.
 
 `TRENDINARY_RESET_DATABASE_ID` is legacy and intentionally inert.
 
