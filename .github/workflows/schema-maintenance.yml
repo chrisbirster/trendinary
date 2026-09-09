@@ -1,0 +1,103 @@
+name: Production schema maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: APPLY DESTRUCTIVE SCHEMA'
+        required: true
+        type: string
+      reason:
+        description: "Why this contract/destructive schema maintenance is safe now"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trendinary-production
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
+      - name: Verify destructive maintenance authorization
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Destructive production schema maintenance must run from main; got $GITHUB_REF"
+            exit 1
+          fi
+          if [ "$CONFIRM" != "APPLY DESTRUCTIVE SCHEMA" ]; then
+            echo "::error::Confirmation phrase does not match APPLY DESTRUCTIVE SCHEMA"
+            exit 1
+          fi
+          if [ -z "$(printf '%s' "$REASON" | tr -d '[:space:]')" ]; then
+            echo "::error::A maintenance reason is required"
+            exit 1
+          fi
+      - name: Verify Turso maintenance credentials
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
+          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
+      - name: Capture destructive Atlas plan
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          atlas schema apply --env production --dry-run 2>&1 | tee atlas-maintenance-plan.sql
+          if python3 scripts/verify-atlas-plan.py atlas-maintenance-plan.sql; then
+            echo "::error::The production plan is non-destructive. Use the ordinary release path instead of the maintenance override."
+            exit 1
+          fi
+          python3 scripts/verify-atlas-plan.py --allow-destructive atlas-maintenance-plan.sql
+      - name: Record maintenance audit summary
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "## Destructive schema maintenance"
+            echo
+            echo "- Actor: \`$GITHUB_ACTOR\`"
+            echo "- Repository: \`$GITHUB_REPOSITORY\`"
+            echo "- Commit: \`$(git rev-parse HEAD)\`"
+            echo "- Ref: \`$GITHUB_REF\`"
+            echo "- Reason: $REASON"
+            echo
+            echo "### Atlas plan"
+            echo '```text'
+            sed -n '1,240p' atlas-maintenance-plan.sql
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Apply explicitly approved destructive schema plan
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          atlas schema apply --env production --auto-approve
+      - name: Verify schema converged after maintenance
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          atlas schema apply --env production --dry-run 2>&1 | tee atlas-post-maintenance-plan.sql
+          python3 scripts/verify-atlas-plan.py atlas-post-maintenance-plan.sql
+      - name: Smoke currently deployed production application
+        run: bash .github/scripts/production-smoke.sh
