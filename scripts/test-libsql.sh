@@ -11,6 +11,7 @@ LIBSQL_PORT="${TRENDINARY_LIBSQL_PORT:-18081}"
 APP1_PORT="${TRENDINARY_LIBSQL_APP1_PORT:-18082}"
 APP2_PORT="${TRENDINARY_LIBSQL_APP2_PORT:-18083}"
 IMAGE="${TRENDINARY_LIBSQL_IMAGE:-trendinary:libsql-test}"
+MIGRATION_IMAGE="${TRENDINARY_MIGRATION_IMAGE:-trendinary:migrate-test}"
 TOKEN="local-test-token"
 
 cleanup() {
@@ -44,15 +45,20 @@ for attempt in $(seq 1 80); do
   sleep 0.25
 done
 
-atlas_apply() {
-  TRENDINARY_ATLAS_DOCKER_NETWORK="$NETWORK" \
-  TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_HOST}:8080" \
-    bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+docker build -f Dockerfile.migrate -t "$MIGRATION_IMAGE" .
+
+goose_apply() {
+  docker run --rm \
+    --network "$NETWORK" \
+    -e TURSO_DATABASE_URL="http://${LIBSQL_HOST}:8080" \
+    -e TURSO_AUTH_TOKEN="$TOKEN" \
+    -e GOOSE_MODE=apply \
+    "$MIGRATION_IMAGE"
 }
 
 # The migration process runs first. No Trendinary application process is
 # allowed to create or alter schema.
-atlas_apply
+goose_apply
 
 TRENDINARY_TEST_TURSO_URL="ws://127.0.0.1:${LIBSQL_PORT}" \
 TRENDINARY_TEST_TURSO_TOKEN="$TOKEN" \
@@ -75,8 +81,8 @@ common_args=(
   -e TRENDINARY_NEWSDATA_DISABLED=1
 )
 
-# Exercise the explicit destructive command. It drops the schema and stops;
-# Atlas, not the application, is responsible for recreating it.
+# Exercise the explicit destructive command. It drops the application schema
+# and Goose migration ledger and stops; Goose is responsible for recreating it.
 docker run --rm \
   --network "$NETWORK" \
   -e TURSO_DATABASE_URL="ws://${LIBSQL_HOST}:8080" \
@@ -104,8 +110,8 @@ if ! docker logs "$FAIL_CONTAINER" 2>&1 | grep -q "database schema is not migrat
 fi
 docker rm "$FAIL_CONTAINER" >/dev/null 2>&1 || true
 
-# Recreate the complete desired schema exactly once, before application start.
-atlas_apply
+# Recreate the complete schema exactly once, before application start.
+goose_apply
 
 docker run -d --name "$APP1_CONTAINER" -p "127.0.0.1:${APP1_PORT}:8080" "${common_args[@]}" "$IMAGE" >/dev/null
 docker run -d --name "$APP2_CONTAINER" -p "127.0.0.1:${APP2_PORT}:8080" "${common_args[@]}" "$IMAGE" >/dev/null
@@ -120,11 +126,11 @@ for port in "$APP1_PORT" "$APP2_PORT"; do
     sleep 0.25
   done
   if [ "$healthy" -ne 1 ]; then
-    echo "Trendinary container on port ${port} did not become healthy against Atlas-prepared shared libSQL" >&2
+    echo "Trendinary container on port ${port} did not become healthy against Goose-prepared shared libSQL" >&2
     docker logs "$APP1_CONTAINER" >&2 || true
     docker logs "$APP2_CONTAINER" >&2 || true
     exit 1
   fi
 done
 
-echo "local libSQL gate: db reset -> Atlas apply -> two non-migrating app processes are healthy"
+echo "local libSQL gate: db reset -> Goose apply -> two non-migrating app processes are healthy"
