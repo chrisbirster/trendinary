@@ -29,10 +29,10 @@ jobs:
               exit 1
             fi
           done
-      - name: Plan production schema inside Fly
+      - name: Plan production migrations inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: bash scripts/run-atlas-fly-machine.sh plan
+        run: bash scripts/run-goose-fly-machine.sh plan
 
   release:
     needs: production_preflight
