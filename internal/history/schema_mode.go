@@ -12,8 +12,8 @@ import (
 var externallyManagedDBs sync.Map // map[*sql.DB]struct{}
 
 // applicationSchemaTables is the runtime/reset ownership boundary for the
-// declarative schema in schema/trendinary.sql. Keep this list in lockstep with
-// that file; schema_contract_test.go enforces the contract.
+// versioned migration schema. Keep this list in lockstep with the migration
+// baseline; schema_contract_test.go enforces the contract.
 var applicationSchemaTables = []string{
 	"signals",
 	"trend_snapshots",
@@ -40,10 +40,12 @@ var applicationSchemaTables = []string{
 	"following_kv",
 }
 
-// Legacy application-owned objects are safe for the explicit reset command to
-// remove even though Atlas no longer manages them in the desired schema.
+// Explicit reset also clears legacy application-owned objects and the Goose
+// migration ledger so a reset database cannot be mistaken for an up-to-date
+// database on the next migration run.
 var legacyApplicationSchemaTables = []string{
 	"trendinary_database_resets",
+	"goose_db_version",
 }
 
 func markExternallyManaged(store *Store) {
@@ -52,8 +54,9 @@ func markExternallyManaged(store *Store) {
 	}
 	externallyManagedDBs.Store(store.db, struct{}{})
 	// These lazy schema guards historically emitted CREATE TABLE/INDEX statements
-	// on first use. Atlas owns production schema changes now, so mark all current
-	// history schema families ready when the database was opened in external mode.
+	// on first use. Versioned migrations own schema changes now, so mark all
+	// current history schema families ready when the database was opened in
+	// external mode.
 	cursorSchemaReady.Store(store, struct{}{})
 	entitySchemaReady.Store(store, struct{}{})
 	membershipSchemaReady.Store(store, struct{}{})
@@ -74,8 +77,9 @@ func (s *Store) ExternallyManagedSchema() bool {
 }
 
 // VerifySchema is intentionally read-only. Production startup calls this after
-// Atlas has run and fails fast if the migration job did not leave a usable
-// schema. The application process never creates, alters, or drops schema here.
+// migrations have run and fails fast if the migration job did not leave a
+// usable schema. The application process never creates, alters, or drops schema
+// here.
 func (s *Store) VerifySchema(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("database is required")
@@ -106,12 +110,12 @@ func (s *Store) VerifySchema(ctx context.Context) error {
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return fmt.Errorf("database schema is not migrated; missing tables: %s; run Atlas before starting Trendinary", strings.Join(missing, ", "))
+		return fmt.Errorf("database schema is not migrated; missing tables: %s; run Goose migrations before starting Trendinary", strings.Join(missing, ", "))
 	}
 
-	// The membership timestamp was the last additive migration before Atlas took
-	// ownership. Checking it protects against pointing a new binary at an older
-	// schema that happens to contain all expected table names.
+	// The membership timestamp was the last additive migration before external
+	// migration ownership. Checking it protects against pointing a new binary at
+	// an older schema that happens to contain all expected table names.
 	columns, err := s.db.QueryContext(ctx, `PRAGMA table_info(trend_signal_memberships)`)
 	if err != nil {
 		return fmt.Errorf("inspect trend_signal_memberships: %w", err)
@@ -133,7 +137,7 @@ func (s *Store) VerifySchema(ctx context.Context) error {
 		return fmt.Errorf("inspect trend_signal_memberships: %w", err)
 	}
 	if !hasFirstObserved {
-		return fmt.Errorf("database schema is not migrated; trend_signal_memberships.first_observed_at is missing; run Atlas before starting Trendinary")
+		return fmt.Errorf("database schema is not migrated; trend_signal_memberships.first_observed_at is missing; run Goose migrations before starting Trendinary")
 	}
 	return nil
 }
