@@ -50,11 +50,12 @@ CREATE TABLE stream_cursors (
 
 CREATE TABLE trend_entities (
   id TEXT PRIMARY KEY,
-  slug TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL,
   canonical_name TEXT NOT NULL,
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL
 );
+CREATE UNIQUE INDEX trend_entities_slug ON trend_entities(slug);
 CREATE TABLE trend_entity_terms (
   entity_id TEXT NOT NULL,
   term TEXT NOT NULL,
@@ -121,7 +122,7 @@ CREATE TABLE editorial_sources (
 );
 CREATE TABLE content_items (
   id TEXT PRIMARY KEY,
-  canonical_url TEXT NOT NULL UNIQUE,
+  canonical_url TEXT NOT NULL,
   original_url TEXT NOT NULL,
   title TEXT NOT NULL,
   publisher TEXT NOT NULL DEFAULT '',
@@ -152,6 +153,7 @@ CREATE TABLE content_items (
   enrichment_error TEXT NOT NULL DEFAULT '',
   estimated_minutes INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX content_items_canonical_url ON content_items(canonical_url);
 CREATE INDEX idx_content_state_score ON content_items(editorial_state, editorial_score DESC, discovered_at DESC);
 CREATE INDEX idx_content_discovered ON content_items(discovered_at DESC);
 CREATE TABLE content_discoveries (
@@ -161,9 +163,9 @@ CREATE TABLE content_discoveries (
   external_source_name TEXT NOT NULL DEFAULT '',
   source_age_text TEXT NOT NULL DEFAULT '',
   discovered_at TEXT NOT NULL,
-  metadata_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(content_item_id, discovery_source_id, external_source_name)
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE UNIQUE INDEX content_discoveries_content_item_id_discovery_source_id_external_source_name ON content_discoveries(content_item_id, discovery_source_id, external_source_name);
 CREATE INDEX idx_discoveries_item ON content_discoveries(content_item_id, discovered_at DESC);
 CREATE TABLE content_notes (
   content_item_id TEXT PRIMARY KEY REFERENCES content_items(id) ON DELETE CASCADE,
@@ -204,9 +206,9 @@ CREATE TABLE newsletter_issue_items (
   content_item_id TEXT NOT NULL REFERENCES content_items(id),
   section TEXT NOT NULL,
   position INTEGER NOT NULL DEFAULT 0,
-  editor_note TEXT NOT NULL DEFAULT '',
-  UNIQUE(issue_id, content_item_id, section)
+  editor_note TEXT NOT NULL DEFAULT ''
 );
+CREATE UNIQUE INDEX newsletter_issue_items_issue_id_content_item_id_section ON newsletter_issue_items(issue_id, content_item_id, section);
 CREATE INDEX idx_issue_items_order ON newsletter_issue_items(issue_id, section, position);
 
 CREATE TABLE quality_feedback (
@@ -239,9 +241,9 @@ CREATE TABLE following_follows (
   kind TEXT NOT NULL,
   value TEXT NOT NULL,
   display_name TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(radar_id, kind, value)
+  created_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX following_follows_radar_id_kind_value ON following_follows(radar_id, kind, value);
 CREATE INDEX idx_following_follows_radar ON following_follows(radar_id);
 CREATE TABLE following_baselines (
   follow_id TEXT NOT NULL,
@@ -267,9 +269,9 @@ CREATE TABLE following_alerts (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  read_at TEXT,
-  UNIQUE(radar_id, fingerprint)
+  read_at TEXT
 );
+CREATE UNIQUE INDEX following_alerts_radar_id_fingerprint ON following_alerts(radar_id, fingerprint);
 CREATE INDEX idx_following_alerts_radar_created ON following_alerts(radar_id, created_at DESC);
 CREATE TABLE following_push_subscriptions (
   id TEXT PRIMARY KEY,
@@ -280,9 +282,9 @@ CREATE TABLE following_push_subscriptions (
   created_at TEXT NOT NULL,
   last_success_at TEXT,
   failures INTEGER NOT NULL DEFAULT 0,
-  disabled_at TEXT,
-  UNIQUE(radar_id, endpoint)
+  disabled_at TEXT
 );
+CREATE UNIQUE INDEX following_push_subscriptions_radar_id_endpoint ON following_push_subscriptions(radar_id, endpoint);
 CREATE INDEX idx_following_push_radar ON following_push_subscriptions(radar_id);
 CREATE TABLE following_kv (
   key TEXT PRIMARY KEY,
