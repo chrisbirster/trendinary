@@ -7,22 +7,22 @@ import (
 	"testing"
 )
 
-func TestApplicationSchemaOwnershipMatchesAtlasDesiredSchema(t *testing.T) {
-	contents, err := os.ReadFile("../../schema/trendinary.sql")
+func TestApplicationSchemaOwnershipMatchesGooseBaseline(t *testing.T) {
+	contents, err := os.ReadFile("../../migrations/00001_baseline.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	matches := regexp.MustCompile(`(?mi)^\s*CREATE\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`).FindAllSubmatch(contents, -1)
-	fromAtlas := make([]string, 0, len(matches))
+	matches := regexp.MustCompile(`(?mi)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(`).FindAllSubmatch(contents, -1)
+	fromMigrations := make([]string, 0, len(matches))
 	for _, match := range matches {
-		fromAtlas = append(fromAtlas, string(match[1]))
+		fromMigrations = append(fromMigrations, string(match[1]))
 	}
 	fromRuntime := append([]string{}, applicationSchemaTables...)
-	slices.Sort(fromAtlas)
+	slices.Sort(fromMigrations)
 	slices.Sort(fromRuntime)
 
-	if !slices.Equal(fromAtlas, fromRuntime) {
-		t.Fatalf("Atlas desired tables and runtime ownership boundary differ\nAtlas:   %v\nRuntime: %v", fromAtlas, fromRuntime)
+	if !slices.Equal(fromMigrations, fromRuntime) {
+		t.Fatalf("Goose baseline tables and runtime ownership boundary differ\nMigrations: %v\nRuntime:    %v", fromMigrations, fromRuntime)
 	}
 }

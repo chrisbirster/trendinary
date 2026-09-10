@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 
-# A single production schema/deploy sequence may run at a time. Atlas runs in a
+# A single production schema/deploy sequence may run at a time. Goose runs in a
 # one-off Fly Machine that inherits the app's Turso secrets and exits before any
 # web Machine is deployed, so application startup never races schema changes.
 concurrency:
@@ -69,10 +69,10 @@ jobs:
               exit 1
             fi
           done
-      - name: Apply database schema with Atlas inside Fly
+      - name: Apply database migrations with Goose inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: bash scripts/run-atlas-fly-machine.sh apply
+        run: bash scripts/run-goose-fly-machine.sh apply
       - name: Deploy Go origin to Fly.io
         run: npm run deploy:fly
         env:
