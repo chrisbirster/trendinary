@@ -64,8 +64,12 @@ docker run -d --name "$APP_CONTAINER" \
 
 for attempt in $(seq 1 60); do
   if curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/v1/healthz" >/dev/null; then
-    PLAYWRIGHT_BASE_URL="http://127.0.0.1:${PORT}" npx playwright test
-    exit 0
+    if PLAYWRIGHT_BASE_URL="http://127.0.0.1:${PORT}" npx playwright test --reporter=line; then
+      exit 0
+    fi
+    echo "Playwright production-image E2E failed; Trendinary container logs follow:" >&2
+    docker logs "$APP_CONTAINER" >&2 || true
+    exit 1
   fi
   if ! docker inspect -f '{{.State.Running}}' "$APP_CONTAINER" 2>/dev/null | grep -q true; then
     echo "Trendinary production image exited before becoming healthy" >&2
