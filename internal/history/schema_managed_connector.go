@@ -9,7 +9,7 @@ import (
 	"github.com/chrisbirster/trendinary/internal/sqlscript"
 )
 
-// schemaManagedConnector is the production runtime boundary. Atlas owns schema
+// schemaManagedConnector is the production runtime boundary. Goose owns schema
 // changes, so application connections never send CREATE/ALTER/DROP statements
 // to Turso. Legacy package constructors still contain idempotent DDL; returning
 // success for schema-only scripts keeps them compatible while making the actual
@@ -44,12 +44,12 @@ func (c *schemaManagedConn) ExecContext(ctx context.Context, query string, args 
 		}
 		if allDDL {
 			if len(args) != 0 {
-				return nil, fmt.Errorf("schema mutation is managed by Atlas and cannot bind runtime arguments")
+				return nil, fmt.Errorf("schema mutation is managed by Goose and cannot bind runtime arguments")
 			}
 			return driver.RowsAffected(0), nil
 		}
 		if anyDDL {
-			return nil, fmt.Errorf("runtime SQL mixes schema mutation with application statements; run Atlas instead")
+			return nil, fmt.Errorf("runtime SQL mixes schema mutation with application statements; run Goose migrations instead")
 		}
 	}
 	return execDriverConn(ctx, c.Conn, query, args)
@@ -127,7 +127,7 @@ func (c *schemaManagedConn) QueryContext(ctx context.Context, query string, args
 
 func (c *schemaManagedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	if schemaDDL(query) {
-		return nil, fmt.Errorf("runtime schema mutation is disabled; run Atlas instead")
+		return nil, fmt.Errorf("runtime schema mutation is disabled; run Goose migrations instead")
 	}
 	if preparer, ok := c.Conn.(driver.ConnPrepareContext); ok {
 		return preparer.PrepareContext(ctx, query)
