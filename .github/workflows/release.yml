@@ -2,37 +2,50 @@ name: Release
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
   production_preflight:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
-      - name: Verify Atlas production credentials
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        with:
+          fetch-depth: 0
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
+      - name: Verify release tag comes from dev
         run: |
           set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
-      - name: Plan production schema without applying it
+          git describe --tags --exact-match HEAD | grep -Fx "$GITHUB_REF_NAME"
+          git fetch origin dev --tags --force
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/dev || {
+            echo "::error::release tag $GITHUB_REF_NAME must point to a commit reachable from dev"
+            exit 1
+          }
+      - name: Verify Turso Fly runtime secrets
+        shell: bash
         env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: atlas schema apply --env production --dry-run
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          secret_table="$(flyctl secrets list --app trendinary)"
+          for required in TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
+            if ! printf '%s\n' "$secret_table" | grep -Fq "$required"; then
+              echo "::error::Missing Fly secret ${required}. Configure Turso before releasing."
+              exit 1
+            fi
+          done
+      - name: Plan production migrations inside Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: bash scripts/run-goose-fly-machine.sh plan
 
   release:
     needs: production_preflight
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release_meta.outputs.tag }}
@@ -67,18 +80,15 @@ jobs:
             echo "::error::VERSION ($VERSION_VALUE) and package.json ($PACKAGE_VERSION) must match"
             exit 1
           fi
+          TAG="v$VERSION_VALUE"
+          if [ "$TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match VERSION/package.json ($TAG)"
+            exit 1
+          fi
+          git describe --tags --exact-match HEAD | grep -Fx "$TAG"
           if ! grep -Eq "^## \[$VERSION_VALUE\]( |$)" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no [$VERSION_VALUE] release section"
             exit 1
-          fi
-          TAG="v$VERSION_VALUE"
-          git fetch --tags --force
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            TAG_SHA="$(git rev-list -n 1 "$TAG")"
-            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
-              echo "::error::$TAG already points to $TAG_SHA instead of this main commit $GITHUB_SHA"
-              exit 1
-            fi
           fi
           echo "version=$VERSION_VALUE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -107,18 +117,6 @@ jobs:
             echo "::error::No release notes found for $VERSION_VALUE"
             exit 1
           fi
-      - name: Create annotated tag when needed
-        env:
-          TAG: ${{ steps.release_meta.outputs.tag }}
-        run: |
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "$TAG already exists at this release commit"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Trendinary $TAG"
-          git push origin "$TAG"
       - name: Create GitHub Release when needed
         env:
           GH_TOKEN: ${{ github.token }}
