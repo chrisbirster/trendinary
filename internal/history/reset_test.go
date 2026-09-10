@@ -23,6 +23,7 @@ CREATE TABLE provider_metadata (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO provider_metadata(id, value) VALUES (1, 'keep me');
 CREATE VIEW provider_metadata_view AS SELECT id, value FROM provider_metadata;
 CREATE TABLE IF NOT EXISTS trendinary_database_resets (reset_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS goose_db_version (id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL, is_applied INTEGER NOT NULL, tstamp TEXT NOT NULL);
 `); err != nil {
 		t.Fatal(err)
 	}
