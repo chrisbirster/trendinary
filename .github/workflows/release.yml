@@ -43,6 +43,11 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: bash scripts/run-goose-fly-machine.sh plan
+      - name: Record deployment hold
+        run: |
+          echo "Production migration plan completed." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow does not apply migrations or deploy production." >> "$GITHUB_STEP_SUMMARY"
+          echo "Review the Goose plan output, then explicitly run the Deploy production workflow for $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: production_preflight
@@ -132,10 +137,9 @@ jobs:
             args+=(--prerelease)
           fi
           gh "${args[@]}"
-
-  deploy:
-    needs: release
-    uses: ./.github/workflows/deploy.yml
-    with:
-      tag: ${{ needs.release.outputs.tag }}
-    secrets: inherit
+      - name: Record explicit deployment requirement
+        env:
+          TAG: ${{ steps.release_meta.outputs.tag }}
+        run: |
+          echo "Release $TAG is published but not deployed." >> "$GITHUB_STEP_SUMMARY"
+          echo "Review the production Goose plan from production_preflight before explicitly running Deploy production for $TAG." >> "$GITHUB_STEP_SUMMARY"
