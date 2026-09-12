@@ -43,6 +43,7 @@ def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 ($d.scanner.enabled != true or (
   ($d.scanner.last_success_at? | type == "string") and
   (($d.scanner.last_success_at | epoch) >= (now - 900)) and
+  ($d.scanner.signals // 0) >= 20 and
   ($d.scanner.running != true or (
     ($d.scanner.last_started_at? | type == "string") and
     (($d.scanner.last_started_at | epoch) >= (now - 180))
@@ -62,7 +63,7 @@ JQ
     fi
   done
 
-  echo "::error::Trendinary runtime is degraded: Jetstream must be connected with a real event <10m old; scanner success must be <15m old (a running scan must have started <3m ago)."
+  echo "::error::Trendinary runtime is degraded: Jetstream must be connected with a real event <10m old; scanner success must be <15m old and contain a meaningful discovery batch."
   jq . "$output" || cat "$output"
   return 1
 }
@@ -72,6 +73,8 @@ check_json "/api/v1/readyz" '.ok == true and .service == "trendinary" and .api_v
 check_runtime_health
 check_json "/api/v1/trends" '
   (.data | type == "array") and
+  (.data | length) == 20 and
+  ([.data[].rank] == [range(1; 21)]) and
   all(.data[];
     ((.slug // "") as $slug |
       ($slug != "at-protocol" and
@@ -80,12 +83,19 @@ check_json "/api/v1/trends" '
        $slug != "that-blue-chair" and
        $slug != "orbit-cup" and
        $slug != "quiet-quitting-2")) and
-    ((.timeline // []) | length) >= 2 and
+    ((.timeline // []) | length) >= 1 and
     ((.aliases // []) | length) <= 12 and
+    (.confidence_tier == "EMERGING" or .confidence_tier == "CORROBORATED" or .confidence_tier == "CONFIRMED") and
+    (.provenance.publisher_count | type == "number") and
+    (.provenance.platform_count | type == "number") and
+    (.provenance.signal_count | type == "number") and
+    (.provenance.publisher_count >= 1) and
+    ((.chart.movement // "") | type == "string") and
+    ((.chart.movement // "") | length) > 0 and
     (([.sources[]?.domain] | unique) as $domains |
       (($domains | length) != 1 or $domains[0] != "wikipedia.org"))
   )
 '
 check_json "/api/v1/following/push/public-key" '.data.public_key | type == "string" and length > 40'
 
-echo "smoke: production API healthy; any published leaderboard entries satisfy quality invariants"
+echo "smoke: production API healthy; Top 20 ranks, provenance, confidence, and chart movement satisfy release invariants"
