@@ -149,14 +149,20 @@ func applyTestMigrations(t *testing.T, path string) {
 	}
 	defer db.Close()
 
-	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
-		migrationPath := filepath.Join("..", "..", "migrations", name)
+	migrations, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) == 0 {
+		t.Fatal("no test migrations found")
+	}
+	for _, migrationPath := range migrations {
 		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(string(migration)); err != nil {
-			t.Fatalf("apply test migration %s: %v", name, err)
+			t.Fatalf("apply test migration %s: %v", filepath.Base(migrationPath), err)
 		}
 	}
 }
