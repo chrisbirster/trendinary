@@ -167,12 +167,22 @@ WHERE trend_id = ?`, trendID).Scan(&stats.PeakRank, &stats.TotalScans, &stats.Nu
 	if err != nil {
 		return stats, fmt.Errorf("chart scans: %w", err)
 	}
-	defer rows.Close()
+	scans := make([]string, 0, 32)
 	for rows.Next() {
 		var scan string
 		if err := rows.Scan(&scan); err != nil {
+			rows.Close()
 			return stats, err
 		}
+		scans = append(scans, scan)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return stats, err
+	}
+	rows.Close()
+
+	for _, scan := range scans {
 		var exists int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM trend_chart_entries WHERE trend_id = ? AND scan_at = ?`, trendID, scan).Scan(&exists); err != nil {
 			return stats, err
@@ -182,7 +192,7 @@ WHERE trend_id = ?`, trendID).Scan(&stats.PeakRank, &stats.TotalScans, &stats.Nu
 		}
 		stats.ConsecutiveScans++
 	}
-	return stats, rows.Err()
+	return stats, nil
 }
 
 func (s *Store) latestChartScanBefore(ctx context.Context, before time.Time) (*time.Time, error) {
