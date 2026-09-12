@@ -9,31 +9,12 @@ Application processes do not migrate the database. Atlas is the only schema owne
 The production release path is:
 
 ```text
-Atlas dry-run in one-off Fly Machine
-        ↓
-publish release
-        ↓
-Atlas apply in one-off Fly Machine
-        ↓
-Fly app deploy
-        ↓
-Cloudflare deploy
-        ↓
-production smoke
+Atlas dry-run preflight -> publish release -> Atlas schema apply -> Fly deploy -> Cloudflare deploy -> production smoke
 ```
 
 Normal `trendinary` startup opens the existing database, performs a read-only schema compatibility check, and starts serving. If Atlas has not prepared the schema, startup fails with an explicit `database schema is not migrated` error instead of creating tables itself.
 
 The desired schema lives in `schema/trendinary.sql`. Atlas configuration lives in `atlas.hcl`.
-
-Production Atlas commands run in short-lived Fly Machines built from `Dockerfile.migrate`. Those Machines run inside the existing `trendinary` Fly app and inherit its existing `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` secrets. `scripts/run-atlas-fly-machine.sh` waits for the Atlas process exit event, checks the real exit code, and then destroys the Machine; merely reaching the Fly `started` state is never treated as migration success. GitHub therefore needs only `FLY_API_TOKEN` for database migration orchestration; Turso credentials do not need to be duplicated into GitHub Actions.
-
-An operator with an authenticated Fly CLI can run the same production-side plan/apply path explicitly:
-
-```bash
-npm run db:schema:fly:plan
-npm run db:schema:fly:apply
-```
 
 ## Database reset
 
@@ -51,15 +32,13 @@ After a reset, run Atlas before starting Trendinary. For the default local SQLit
 npm run db:schema:local:apply
 ```
 
-For a configured Turso database from an operator workstation:
+For a configured Turso database:
 
 ```bash
 npm run db:schema:apply
 ```
 
-Production releases use the one-off Fly migration Machine instead, so the production Turso credentials stay in Fly.
-
-A clean-slate recovery is always:
+So a clean-slate recovery is always:
 
 ```text
 trendinary db reset
@@ -99,14 +78,14 @@ npm run db:schema:local:plan
 npm run db:schema:local:apply
 ```
 
-For a directly configured Turso database:
+For production/shared Turso:
 
 ```bash
 npm run db:schema:plan
 npm run db:schema:apply
 ```
 
-Those direct Turso commands require `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in the caller's environment. They are useful for deliberate operator work, but GitHub production releases do not require duplicate Turso secrets: release preflight and apply run Atlas inside ephemeral Fly Machines that inherit the app's existing secrets.
+The Turso commands require `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. GitHub's `production` environment carries those credentials so the release preflight can dry-run the plan before tagging and the deploy workflow can apply it before Fly starts the new release.
 
 ## Fast development verification
 
@@ -141,7 +120,6 @@ The release gate performs:
 12. Atlas applying the schema again.
 13. Two production Docker containers booting against that one Atlas-prepared shared database.
 14. Playwright browser tests against the actual production Docker image after Atlas migration.
-15. The Fly migration image itself building successfully from `Dockerfile.migrate`.
 
 The browser tests cover the empty production leaderboard, absence of prototype/demo trends, SPA deep links, and coherent trend-detail source rendering.
 
