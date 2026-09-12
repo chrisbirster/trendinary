@@ -107,7 +107,7 @@ func TestScannerPublishesRanksOneThroughTwenty(t *testing.T) {
 			ID:               fmt.Sprintf("rss:fixture-%02d", i),
 			Source:           model.Source{Name: fmt.Sprintf("Publisher %02d", i), Domain: fmt.Sprintf("publisher-%02d.example", i)},
 			DiscoveryChannel: "rss",
-			Title:            fmt.Sprintf("Quasar%02d launches a distinct public project with unusual new attention", i),
+			Title:            fmt.Sprintf("Quasar%02d Zephyr%02d Nebula%02d Flux%02d", i, i, i, i),
 			PublishedAt:      "2026-09-12T20:00:00Z",
 		})
 	}
