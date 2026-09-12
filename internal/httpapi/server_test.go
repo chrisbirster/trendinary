@@ -243,17 +243,20 @@ func TestReadinessRejectsStaleSchema(t *testing.T) {
 func prepareManagedDatabase(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "managed.db")
-	schema, err := os.ReadFile("../../schema/trendinary.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
 	admin, err := history.OpenAdminExisting(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sqlscript.Execute(context.Background(), admin.DB(), string(schema)); err != nil {
-		_ = admin.Close()
-		t.Fatal(err)
+	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
+		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			_ = admin.Close()
+			t.Fatal(err)
+		}
+		if err := sqlscript.Execute(context.Background(), admin.DB(), string(migration)); err != nil {
+			_ = admin.Close()
+			t.Fatalf("apply test migration %s: %v", name, err)
+		}
 	}
 	if err := admin.Close(); err != nil {
 		t.Fatal(err)
