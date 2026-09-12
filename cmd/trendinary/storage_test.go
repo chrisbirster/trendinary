@@ -113,8 +113,6 @@ func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Use application data rather than schema DDL: runtime schema mutation is
-	// intentionally intercepted now that Goose owns schema evolution.
 	if _, err := first.DB().Exec(`INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('survivor','test','test','2026-09-08T00:00:00Z')`); err != nil {
 		first.Close()
 		t.Fatal(err)
@@ -123,8 +121,6 @@ func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This was the production footgun. Keeping the old variable in an operator's
-	// shell or deployment must be harmless forever.
 	t.Setenv("TRENDINARY_RESET_DATABASE_ID", "this-must-never-run")
 	second, _, err := openHistory()
 	if err != nil {
@@ -161,7 +157,8 @@ func applyTestMigrations(t *testing.T, path string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(string(migration)); err != nil {
+		up := strings.SplitN(string(migration), "-- +goose Down", 2)[0]
+		if _, err := db.Exec(up); err != nil {
 			t.Fatalf("apply test migration %s: %v", filepath.Base(migrationPath), err)
 		}
 	}
