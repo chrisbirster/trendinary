@@ -4,6 +4,26 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-12
+
+### Added
+
+- Persisted Top 20 chart snapshots with contiguous ranks, score, confidence tier, publisher count, platform count, signal count, and per-trend movement history (`NEW`, `RE`, `▲`, `▼`).
+- Publisher/platform provenance on live chart entries so each ranked topic can show the independent evidence behind its position instead of only an aggregate score.
+- Official Google Trends Trending Now RSS discovery with source-health telemetry, cadence control, attribution, and deduplication; the official Google Trends API integration remains dormant until API access is approved.
+- Release-gate acceptance coverage that feeds enough synthetic independent stories to prove Trendinary can publish credible ranks #1 through #20 without filling the chart with obvious noise.
+
+### Changed
+
+- Trendinary Score advances to Score v4, including duplicate/clone discounting, social-noise filtering, stronger independent-source corroboration, and serialization of the new scoring model in chart output.
+- The scanner now targets a genuine internet Top 20 while preserving quality gates, with chart history persisted by Goose migration `00003_top20_chart.sql`.
+- Source contribution auditing now tracks the discovery path and publisher/platform breadth needed to explain how RSS/news, GDELT, Hacker News, Wikipedia, Bluesky, GitHub, and Google Trends contribute to real chart entries.
+
+### Fixed
+
+- Readiness/database test fixtures now apply every Goose migration instead of hard-coding migrations `00001` and `00002`, preventing tests from silently missing future schema changes.
+- Top 20 regression coverage now verifies chart persistence, rank/movement calculations, publisher/platform counts, clone discounting, social-noise filtering, and Score v4 serialization under the same exact-head CI gate used for release.
+
 ## [0.5.7] - 2026-09-08
 
 ### Changed
