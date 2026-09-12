@@ -55,7 +55,7 @@ type runningServer struct {
 	url  string
 }
 
-func TestBlankDatabaseIsRefusedUntilSchemaIsApplied(t *testing.T) {
+func TestBlankDatabaseIsRefusedUntilMigrationsAreApplied(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "blank.db")
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = repoRoot
@@ -82,7 +82,7 @@ func TestBlankDatabaseIsRefusedUntilSchemaIsApplied(t *testing.T) {
 		t.Fatalf("runtime startup created %d application tables", tables)
 	}
 
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 	server := startServer(t, dbPath, nil)
 	assertHealthy(t, server.url)
 	stopServer(t, server)
@@ -90,7 +90,7 @@ func TestBlankDatabaseIsRefusedUntilSchemaIsApplied(t *testing.T) {
 
 func TestPreparedDatabaseBootsAndRestarts(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prepared.db")
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 	first := startServer(t, dbPath, nil)
 	assertHealthy(t, first.url)
 	stopServer(t, first)
@@ -102,7 +102,7 @@ func TestPreparedDatabaseBootsAndRestarts(t *testing.T) {
 
 func TestTwentyRestartLoopDoesNotMutateSchema(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "restart.db")
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 	before := schemaSQL(t, dbPath)
 	for i := 0; i < 20; i++ {
 		server := startServer(t, dbPath, nil)
@@ -117,7 +117,7 @@ func TestTwentyRestartLoopDoesNotMutateSchema(t *testing.T) {
 
 func TestTwoProcessesShareOnePreparedDatabaseAndBothBecomeHealthy(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "shared.db")
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 	first := startServer(t, dbPath, nil)
 	defer stopServer(t, first)
 	second := startServer(t, dbPath, nil)
@@ -128,7 +128,7 @@ func TestTwoProcessesShareOnePreparedDatabaseAndBothBecomeHealthy(t *testing.T) 
 
 func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "legacy-reset.db")
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestLegacyStartupResetEnvironmentCannotDeleteData(t *testing.T) {
 
 func TestDBResetDropsSchemaAndRequiresExternalMigrationBeforeBoot(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "cli-reset.db")
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -210,25 +210,28 @@ func TestDBResetDropsSchemaAndRequiresExternalMigrationBeforeBoot(t *testing.T) 
 		t.Fatalf("runtime should refuse reset database before external migration: err=%v\n%s", err, output)
 	}
 
-	applySchema(t, dbPath)
+	applyMigrations(t, dbPath)
 	server := startServer(t, dbPath, nil)
 	assertHealthy(t, server.url)
 	stopServer(t, server)
 }
 
-func applySchema(t *testing.T, dbPath string) {
+func applyMigrations(t *testing.T, dbPath string) {
 	t.Helper()
-	schema, err := os.ReadFile(filepath.Join(repoRoot, "schema", "trendinary.sql"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(string(schema)); err != nil {
-		t.Fatalf("apply desired schema: %v", err)
+
+	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
+		migration, err := os.ReadFile(filepath.Join(repoRoot, "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(migration)); err != nil {
+			t.Fatalf("apply test migration %s: %v", name, err)
+		}
 	}
 }
 

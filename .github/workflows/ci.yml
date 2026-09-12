@@ -16,16 +16,22 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.27.0"
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: ariga/setup-atlas@v0
-      - run: npm install
+          cache: npm
+      - run: npm ci
+      - name: Verify supply-chain policy
+        run: bash scripts/verify-supply-chain.sh
+      - name: Audit production npm dependencies
+        run: npm run security:node
+      - name: Audit reachable Go vulnerabilities
+        run: npm run security:go
       - name: Verify release version metadata
         run: |
           set -euo pipefail
@@ -39,24 +45,28 @@ jobs:
             echo "::error::CHANGELOG.md does not contain a release section for $FILE_VERSION"
             exit 1
           fi
-      - name: Verify Atlas local schema environment
+      - name: Validate Goose migrations
         run: npm run db:schema:local:plan
       - name: Verify production smoke syntax
         run: bash -n .github/scripts/production-smoke.sh
-      - name: Verify local test scripts
+      - name: Verify migration and test scripts
         run: |
-          bash -n scripts/atlas-apply-local-libsql.sh
+          bash -n scripts/verify-supply-chain.sh
           bash -n scripts/test-libsql.sh
           bash -n scripts/test-e2e-docker.sh
+          bash -n scripts/run-goose-fly-machine.sh
+          sh -n scripts/goose-fly-entrypoint.sh
+      - name: Verify Fly Goose migration image
+        run: docker build -f Dockerfile.migrate -t trendinary:goose-migrate-test .
       - name: Verify Go module lock files
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Run local release gate
         run: npm run verify:local
-      - name: Verify Atlas -> real libSQL -> two runtime processes
+      - name: Verify Goose -> real libSQL -> two runtime processes
         run: npm run test:libsql
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
-      - name: Verify production Docker image after Atlas migration
+      - name: Verify production Docker image after Goose migration
         run: npm run test:e2e:docker

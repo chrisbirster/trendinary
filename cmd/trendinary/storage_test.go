@@ -80,9 +80,9 @@ func TestOpenHistoryRefusesBlankSQLiteInsteadOfMigratingIt(t *testing.T) {
 	}
 }
 
-func TestOpenHistoryUsesAtlasPreparedSQLiteForDevelopment(t *testing.T) {
+func TestOpenHistoryUsesGoosePreparedSQLiteForDevelopment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trendinary.db")
-	applyTestSchema(t, path)
+	applyTestMigrations(t, path)
 	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
 	t.Setenv("TURSO_DATABASE_URL", "")
 	t.Setenv("TURSO_AUTH_TOKEN", "")
@@ -97,13 +97,13 @@ func TestOpenHistoryUsesAtlasPreparedSQLiteForDevelopment(t *testing.T) {
 		t.Fatalf("backend = %q", backend)
 	}
 	if !store.ExternallyManagedSchema() {
-		t.Fatal("runtime store was not marked Atlas-managed")
+		t.Fatal("runtime store was not marked migration-managed")
 	}
 }
 
 func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trendinary.db")
-	applyTestSchema(t, path)
+	applyTestMigrations(t, path)
 	t.Setenv("TRENDINARY_REQUIRE_TURSO", "")
 	t.Setenv("TURSO_DATABASE_URL", "")
 	t.Setenv("TURSO_AUTH_TOKEN", "")
@@ -114,7 +114,7 @@ func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Use application data rather than schema DDL: runtime schema mutation is
-	// intentionally intercepted now that Atlas owns the schema.
+	// intentionally intercepted now that Goose owns schema evolution.
 	if _, err := first.DB().Exec(`INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('survivor','test','test','2026-09-08T00:00:00Z')`); err != nil {
 		first.Close()
 		t.Fatal(err)
@@ -141,19 +141,22 @@ func TestOpenHistoryNeverHonorsLegacyStartupResetEnvironment(t *testing.T) {
 	}
 }
 
-func applyTestSchema(t *testing.T, path string) {
+func applyTestMigrations(t *testing.T, path string) {
 	t.Helper()
-	schemaPath := filepath.Join("..", "..", "schema", "trendinary.sql")
-	schema, err := os.ReadFile(schemaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(string(schema)); err != nil {
-		t.Fatalf("apply test schema: %v", err)
+
+	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
+		migrationPath := filepath.Join("..", "..", "migrations", name)
+		migration, err := os.ReadFile(migrationPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(migration)); err != nil {
+			t.Fatalf("apply test migration %s: %v", name, err)
+		}
 	}
 }

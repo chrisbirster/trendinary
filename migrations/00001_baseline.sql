@@ -1,6 +1,6 @@
-PRAGMA foreign_keys = ON;
+-- +goose Up
 
-CREATE TABLE signals (
+CREATE TABLE IF NOT EXISTS signals (
   id TEXT PRIMARY KEY,
   source_name TEXT NOT NULL,
   source_domain TEXT,
@@ -17,10 +17,10 @@ CREATE TABLE signals (
   reposts INTEGER NOT NULL DEFAULT 0,
   quotes INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_signals_observed_at ON signals(observed_at);
-CREATE INDEX idx_signals_source_domain ON signals(source_domain);
+CREATE INDEX IF NOT EXISTS idx_signals_observed_at ON signals(observed_at);
+CREATE INDEX IF NOT EXISTS idx_signals_source_domain ON signals(source_domain);
 
-CREATE TABLE trend_snapshots (
+CREATE TABLE IF NOT EXISTS trend_snapshots (
   trend_key TEXT NOT NULL,
   observed_at TEXT NOT NULL,
   lifecycle TEXT NOT NULL,
@@ -39,39 +39,40 @@ CREATE TABLE trend_snapshots (
   raw_engagement REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (trend_key, observed_at)
 );
-CREATE INDEX idx_trend_snapshots_observed_at ON trend_snapshots(observed_at);
-CREATE INDEX idx_trend_snapshots_trend_time ON trend_snapshots(trend_key, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_snapshots_observed_at ON trend_snapshots(observed_at);
+CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_time ON trend_snapshots(trend_key, observed_at DESC);
 
-CREATE TABLE stream_cursors (
+CREATE TABLE IF NOT EXISTS stream_cursors (
   name TEXT PRIMARY KEY,
   seq INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE trend_entities (
+CREATE TABLE IF NOT EXISTS trend_entities (
   id TEXT PRIMARY KEY,
-  slug TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL,
   canonical_name TEXT NOT NULL,
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL
 );
-CREATE TABLE trend_entity_terms (
+CREATE UNIQUE INDEX IF NOT EXISTS trend_entities_slug ON trend_entities(slug);
+CREATE TABLE IF NOT EXISTS trend_entity_terms (
   entity_id TEXT NOT NULL,
   term TEXT NOT NULL,
   PRIMARY KEY (entity_id, term),
   FOREIGN KEY (entity_id) REFERENCES trend_entities(id) ON DELETE CASCADE
 );
-CREATE INDEX idx_trend_entity_terms_term ON trend_entity_terms(term);
-CREATE TABLE trend_entity_aliases (
+CREATE INDEX IF NOT EXISTS idx_trend_entity_terms_term ON trend_entity_terms(term);
+CREATE TABLE IF NOT EXISTS trend_entity_aliases (
   entity_id TEXT NOT NULL,
   alias_key TEXT NOT NULL,
   display_alias TEXT NOT NULL,
   PRIMARY KEY (entity_id, alias_key),
   FOREIGN KEY (entity_id) REFERENCES trend_entities(id) ON DELETE CASCADE
 );
-CREATE INDEX idx_trend_entity_aliases_key ON trend_entity_aliases(alias_key);
+CREATE INDEX IF NOT EXISTS idx_trend_entity_aliases_key ON trend_entity_aliases(alias_key);
 
-CREATE TABLE trend_signal_memberships (
+CREATE TABLE IF NOT EXISTS trend_signal_memberships (
   trend_key TEXT NOT NULL,
   signal_id TEXT NOT NULL,
   first_observed_at TEXT NOT NULL DEFAULT '',
@@ -79,9 +80,9 @@ CREATE TABLE trend_signal_memberships (
   PRIMARY KEY (trend_key, signal_id),
   FOREIGN KEY (signal_id) REFERENCES signals(id) ON DELETE CASCADE
 );
-CREATE INDEX idx_trend_signal_memberships_trend ON trend_signal_memberships(trend_key, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trend_signal_memberships_trend ON trend_signal_memberships(trend_key, observed_at DESC);
 
-CREATE TABLE trend_source_observations (
+CREATE TABLE IF NOT EXISTS trend_source_observations (
   trend_id TEXT NOT NULL,
   source_domain TEXT NOT NULL,
   source_name TEXT NOT NULL,
@@ -93,9 +94,9 @@ CREATE TABLE trend_source_observations (
   engagement INTEGER NOT NULL,
   PRIMARY KEY (trend_id, source_domain, observed_at)
 );
-CREATE INDEX idx_trend_source_observations_trend ON trend_source_observations(trend_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_trend_source_observations_trend ON trend_source_observations(trend_id, observed_at);
 
-CREATE TABLE source_api_daily_quota (
+CREATE TABLE IF NOT EXISTS source_api_daily_quota (
   source TEXT NOT NULL,
   day TEXT NOT NULL,
   calls INTEGER NOT NULL DEFAULT 0,
@@ -104,9 +105,9 @@ CREATE TABLE source_api_daily_quota (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (source, day)
 );
-CREATE INDEX idx_source_api_daily_quota_day ON source_api_daily_quota(day);
+CREATE INDEX IF NOT EXISTS idx_source_api_daily_quota_day ON source_api_daily_quota(day);
 
-CREATE TABLE editorial_sources (
+CREATE TABLE IF NOT EXISTS editorial_sources (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -119,9 +120,9 @@ CREATE TABLE editorial_sources (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE content_items (
+CREATE TABLE IF NOT EXISTS content_items (
   id TEXT PRIMARY KEY,
-  canonical_url TEXT NOT NULL UNIQUE,
+  canonical_url TEXT NOT NULL,
   original_url TEXT NOT NULL,
   title TEXT NOT NULL,
   publisher TEXT NOT NULL DEFAULT '',
@@ -152,27 +153,28 @@ CREATE TABLE content_items (
   enrichment_error TEXT NOT NULL DEFAULT '',
   estimated_minutes INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_content_state_score ON content_items(editorial_state, editorial_score DESC, discovered_at DESC);
-CREATE INDEX idx_content_discovered ON content_items(discovered_at DESC);
-CREATE TABLE content_discoveries (
+CREATE UNIQUE INDEX IF NOT EXISTS content_items_canonical_url ON content_items(canonical_url);
+CREATE INDEX IF NOT EXISTS idx_content_state_score ON content_items(editorial_state, editorial_score DESC, discovered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_content_discovered ON content_items(discovered_at DESC);
+CREATE TABLE IF NOT EXISTS content_discoveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content_item_id TEXT NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
   discovery_source_id TEXT NOT NULL REFERENCES editorial_sources(id),
   external_source_name TEXT NOT NULL DEFAULT '',
   source_age_text TEXT NOT NULL DEFAULT '',
   discovered_at TEXT NOT NULL,
-  metadata_json TEXT NOT NULL DEFAULT '{}',
-  UNIQUE(content_item_id, discovery_source_id, external_source_name)
+  metadata_json TEXT NOT NULL DEFAULT '{}'
 );
-CREATE INDEX idx_discoveries_item ON content_discoveries(content_item_id, discovered_at DESC);
-CREATE TABLE content_notes (
+CREATE UNIQUE INDEX IF NOT EXISTS content_discoveries_content_item_id_discovery_source_id_external_source_name ON content_discoveries(content_item_id, discovery_source_id, external_source_name);
+CREATE INDEX IF NOT EXISTS idx_discoveries_item ON content_discoveries(content_item_id, discovered_at DESC);
+CREATE TABLE IF NOT EXISTS content_notes (
   content_item_id TEXT PRIMARY KEY REFERENCES content_items(id) ON DELETE CASCADE,
   note TEXT NOT NULL DEFAULT '',
   worth_sharing INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE ingestion_runs (
+CREATE TABLE IF NOT EXISTS ingestion_runs (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES editorial_sources(id),
   started_at TEXT NOT NULL,
@@ -187,8 +189,8 @@ CREATE TABLE ingestion_runs (
   errors INTEGER NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_ingestion_source_time ON ingestion_runs(source_id, started_at DESC);
-CREATE TABLE newsletter_issues (
+CREATE INDEX IF NOT EXISTS idx_ingestion_source_time ON ingestion_runs(source_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS newsletter_issues (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -198,18 +200,18 @@ CREATE TABLE newsletter_issues (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE newsletter_issue_items (
+CREATE TABLE IF NOT EXISTS newsletter_issue_items (
   id TEXT PRIMARY KEY,
   issue_id TEXT NOT NULL REFERENCES newsletter_issues(id) ON DELETE CASCADE,
   content_item_id TEXT NOT NULL REFERENCES content_items(id),
   section TEXT NOT NULL,
   position INTEGER NOT NULL DEFAULT 0,
-  editor_note TEXT NOT NULL DEFAULT '',
-  UNIQUE(issue_id, content_item_id, section)
+  editor_note TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_issue_items_order ON newsletter_issue_items(issue_id, section, position);
+CREATE UNIQUE INDEX IF NOT EXISTS newsletter_issue_items_issue_id_content_item_id_section ON newsletter_issue_items(issue_id, content_item_id, section);
+CREATE INDEX IF NOT EXISTS idx_issue_items_order ON newsletter_issue_items(issue_id, section, position);
 
-CREATE TABLE quality_feedback (
+CREATE TABLE IF NOT EXISTS quality_feedback (
   id TEXT PRIMARY KEY,
   trend_key TEXT NOT NULL,
   trend_slug TEXT NOT NULL,
@@ -220,10 +222,10 @@ CREATE TABLE quality_feedback (
   lifecycle TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
-CREATE INDEX idx_quality_feedback_trend_time ON quality_feedback(trend_key, created_at DESC);
-CREATE INDEX idx_quality_feedback_label_time ON quality_feedback(label, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_feedback_trend_time ON quality_feedback(trend_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_feedback_label_time ON quality_feedback(label, created_at DESC);
 
-CREATE TABLE following_radars (
+CREATE TABLE IF NOT EXISTS following_radars (
   radar_id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
@@ -233,17 +235,17 @@ CREATE TABLE following_radars (
   corroboration INTEGER NOT NULL DEFAULT 1,
   resurfacing INTEGER NOT NULL DEFAULT 1
 );
-CREATE TABLE following_follows (
+CREATE TABLE IF NOT EXISTS following_follows (
   id TEXT PRIMARY KEY,
   radar_id TEXT NOT NULL,
   kind TEXT NOT NULL,
   value TEXT NOT NULL,
   display_name TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(radar_id, kind, value)
+  created_at TEXT NOT NULL
 );
-CREATE INDEX idx_following_follows_radar ON following_follows(radar_id);
-CREATE TABLE following_baselines (
+CREATE UNIQUE INDEX IF NOT EXISTS following_follows_radar_id_kind_value ON following_follows(radar_id, kind, value);
+CREATE INDEX IF NOT EXISTS idx_following_follows_radar ON following_follows(radar_id);
+CREATE TABLE IF NOT EXISTS following_baselines (
   follow_id TEXT NOT NULL,
   trend_key TEXT NOT NULL,
   slug TEXT NOT NULL,
@@ -255,7 +257,7 @@ CREATE TABLE following_baselines (
   observed_at TEXT NOT NULL,
   PRIMARY KEY(follow_id, trend_key)
 );
-CREATE TABLE following_alerts (
+CREATE TABLE IF NOT EXISTS following_alerts (
   id TEXT PRIMARY KEY,
   radar_id TEXT NOT NULL,
   follow_id TEXT NOT NULL,
@@ -267,11 +269,11 @@ CREATE TABLE following_alerts (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  read_at TEXT,
-  UNIQUE(radar_id, fingerprint)
+  read_at TEXT
 );
-CREATE INDEX idx_following_alerts_radar_created ON following_alerts(radar_id, created_at DESC);
-CREATE TABLE following_push_subscriptions (
+CREATE UNIQUE INDEX IF NOT EXISTS following_alerts_radar_id_fingerprint ON following_alerts(radar_id, fingerprint);
+CREATE INDEX IF NOT EXISTS idx_following_alerts_radar_created ON following_alerts(radar_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS following_push_subscriptions (
   id TEXT PRIMARY KEY,
   radar_id TEXT NOT NULL,
   endpoint TEXT NOT NULL,
@@ -280,11 +282,11 @@ CREATE TABLE following_push_subscriptions (
   created_at TEXT NOT NULL,
   last_success_at TEXT,
   failures INTEGER NOT NULL DEFAULT 0,
-  disabled_at TEXT,
-  UNIQUE(radar_id, endpoint)
+  disabled_at TEXT
 );
-CREATE INDEX idx_following_push_radar ON following_push_subscriptions(radar_id);
-CREATE TABLE following_kv (
+CREATE UNIQUE INDEX IF NOT EXISTS following_push_subscriptions_radar_id_endpoint ON following_push_subscriptions(radar_id, endpoint);
+CREATE INDEX IF NOT EXISTS idx_following_push_radar ON following_push_subscriptions(radar_id);
+CREATE TABLE IF NOT EXISTS following_kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL

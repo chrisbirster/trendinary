@@ -1,23 +1,34 @@
 FROM node:24-alpine AS web
 WORKDIR /src
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build:web
 
 FROM golang:1.27-alpine AS build
 WORKDIR /src
+ARG TRENDINARY_RELEASE=dev
+ARG TRENDINARY_COMMIT_SHA=unknown
 
 COPY go.mod go.sum ./
-RUN go mod download
+# Module contents remain pinned and checksum-verified by go.sum. Retry only
+# transient transport failures from the module proxy/storage backend.
+RUN set -eu; \
+    for attempt in 1 2 3 4; do \
+      if go mod download; then exit 0; fi; \
+      if [ "$attempt" -eq 4 ]; then exit 1; fi; \
+      sleep $((attempt * 2)); \
+    done
 
 COPY cmd ./cmd
 COPY internal ./internal
 COPY --from=web /src/internal/web/dist ./internal/web/dist
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/trendinary ./cmd/trendinary
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X github.com/chrisbirster/trendinary/internal/buildinfo.Release=${TRENDINARY_RELEASE} -X github.com/chrisbirster/trendinary/internal/buildinfo.Commit=${TRENDINARY_COMMIT_SHA}" \
+    -o /out/trendinary ./cmd/trendinary
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \

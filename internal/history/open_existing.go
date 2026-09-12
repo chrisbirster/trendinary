@@ -13,8 +13,8 @@ import (
 )
 
 // OpenExisting opens a local SQLite database without creating or changing
-// schema. Atlas owns schema creation for local runtime just as it does in
-// production.
+// schema. Goose migrations own schema creation for local runtime just as they
+// do in production.
 func OpenExisting(path string) (*Store, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -60,7 +60,7 @@ func OpenAdminExisting(path string) (*Store, error) {
 }
 
 // OpenTursoExisting opens Turso/libSQL for normal application runtime. Schema
-// DDL is intercepted at the connector boundary because Atlas owns all schema
+// DDL is intercepted at the connector boundary because Goose owns all schema
 // creation and upgrades before the Fly deployment starts.
 func OpenTursoExisting(databaseURL, authToken string) (*Store, error) {
 	return openTursoExisting(databaseURL, authToken, true)
@@ -102,10 +102,10 @@ func openTursoExisting(databaseURL, authToken string, schemaManaged bool) (*Stor
 	if err != nil {
 		return nil, fmt.Errorf("configure Turso connector: %w", err)
 	}
-	// Preserve the old libSQL transport behavior beneath the Atlas boundary:
-	// remote libSQL still requires one statement per request for ordinary DML.
-	// The outer schema-managed connector can then intercept DDL while delegating
-	// non-DDL scripts to the splitter exactly as OpenTurso historically did.
+	// Preserve the existing libSQL transport behavior beneath the migration
+	// boundary: remote libSQL still requires one statement per request for
+	// ordinary DML. The outer schema-managed connector intercepts runtime DDL
+	// while delegating non-DDL scripts to the splitter.
 	scripted := scriptConnector{inner: connector}
 	if schemaManaged {
 		return finishTursoOpen(sql.OpenDB(schemaManagedConnector{inner: scripted}), true)

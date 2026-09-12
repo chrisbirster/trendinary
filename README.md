@@ -146,10 +146,10 @@ See `docs/news-discovery.md` for source semantics and quota behavior.
 
 ## Local development
 
-Install dependencies and make sure the Atlas CLI is available:
+Install the exact committed dependency graph and make sure the Atlas CLI is available:
 
 ```bash
-npm install
+npm ci
 ```
 
 Prepare the default local SQLite database from the declarative schema before starting the application:
@@ -195,7 +195,7 @@ For the production-topology release gate, including real libSQL, Atlas, two appl
 npm run verify:release
 ```
 
-See `docs/local-release-gate.md` for the complete gate.
+See `docs/local-release-gate.md` for the complete gate and `docs/dependencies.md` for dependency and supply-chain policy.
 
 ## Production persistence
 
@@ -228,3 +228,4 @@ See `docs/turso.md` and `docs/architecture.md`.
 - `docs/turso.md`
 - `docs/local-release-gate.md`
 - `docs/release-process.md`
+- `docs/dependencies.md`

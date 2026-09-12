@@ -17,8 +17,9 @@ on:
 permissions:
   contents: read
 
-# A single production schema/deploy sequence may run at a time. Atlas finishes
-# before Fly is touched, so application machines never race each other on DDL.
+# A single production migration/deploy sequence may run at a time. Goose runs
+# in a one-off Fly Machine that inherits the app's Turso secrets and exits before
+# any web Machine is deployed, so application startup never races schema changes.
 concurrency:
   group: trendinary-production
   cancel-in-progress: false
@@ -30,7 +31,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
@@ -50,22 +51,18 @@ jobs:
             echo "::error::tag $RELEASE_TAG does not match VERSION ($FILE_VERSION)"
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: ariga/setup-atlas@v0
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: npm install
-      - name: Verify Turso migration credentials
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
+          cache: npm
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
+      - run: npm ci
+      - name: Verify supply-chain policy
+        run: bash scripts/verify-supply-chain.sh
       - name: Verify Turso Fly runtime secrets
         shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
           secret_table="$(flyctl secrets list --app trendinary)"
@@ -75,17 +72,17 @@ jobs:
               exit 1
             fi
           done
+      - name: Apply database migrations with Goose inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Apply database schema with Atlas
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: bash scripts/run-goose-fly-machine.sh apply
+      - name: Deploy Go origin to Fly.io
         run: |
           set -euo pipefail
-          atlas schema apply --env production --auto-approve
-      - name: Deploy Go origin to Fly.io
-        run: npm run deploy:fly
+          BUILD_SHA="$(git rev-parse HEAD)"
+          npm run deploy:fly -- \
+            --build-arg "TRENDINARY_RELEASE=$RELEASE_TAG" \
+            --build-arg "TRENDINARY_COMMIT_SHA=$BUILD_SHA"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       - name: Install SST providers
@@ -99,4 +96,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_DEFAULT_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_DEFAULT_ACCOUNT_ID }}
       - name: Smoke public production API
-        run: bash .github/scripts/production-smoke.sh
+        run: |
+          TRENDINARY_EXPECTED_RELEASE="$RELEASE_TAG" \
+          TRENDINARY_EXPECTED_COMMIT="$(git rev-parse HEAD)" \
+          bash .github/scripts/production-smoke.sh

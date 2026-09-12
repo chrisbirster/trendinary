@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/chrisbirster/trendinary/internal/buildinfo"
 	"github.com/chrisbirster/trendinary/internal/engine"
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/httpapi"
+	"github.com/chrisbirster/trendinary/internal/sqlscript"
 	"github.com/chrisbirster/trendinary/internal/store"
 )
 
@@ -59,11 +64,11 @@ func TestTrendHistoryIsChronological(t *testing.T) {
 	for index, scoreValue := range []int{40, 70} {
 		score := engine.Score(engine.ScoreInput{Attention: float64(scoreValue) / 100, Velocity: 0.7, SourceBreadth: 0.5, CommunityBreadth: 0.5, Novelty: 0.8, Confidence: 0.8})
 		if err := historical.RecordSnapshot(ctx, history.Snapshot{
-			TrendKey: "at-protocol",
+			TrendKey:   "at-protocol",
 			ObservedAt: base.Add(time.Duration(index) * time.Minute),
-			Lifecycle: "RISING",
-			Score: score,
-			Raw: history.RawMetrics{SignalCount: 2 + index, RawAttention: float64(100 + index*50)},
+			Lifecycle:  "RISING",
+			Score:      score,
+			Raw:        history.RawMetrics{SignalCount: 2 + index, RawAttention: float64(100 + index*50)},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -139,4 +144,132 @@ func TestScoreMethodologyIsVersionedAndTransparent(t *testing.T) {
 	if payload.Data.Weights["velocity"] <= payload.Data.Weights["attention"] {
 		t.Fatalf("velocity should outweigh raw attention: %+v", payload.Data.Weights)
 	}
+}
+
+func TestHealthReportsRuntimeIdentity(t *testing.T) {
+	handler := httpapi.New(
+		store.NewMemory(),
+		http.NotFoundHandler(),
+		httpapi.WithBuildInfo(buildinfo.Info{APIVersion: "v1", Release: "v9.8.7", Commit: "abcdef123456"}),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/healthz", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	var payload struct {
+		OK         bool   `json:"ok"`
+		Version    string `json:"version"`
+		APIVersion string `json:"api_version"`
+		Release    string `json:"release"`
+		Commit     string `json:"commit"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || payload.Version != "v1" || payload.APIVersion != "v1" || payload.Release != "v9.8.7" || payload.Commit != "abcdef123456" {
+		t.Fatalf("unexpected health identity: %+v", payload)
+	}
+}
+
+func TestReadinessHealthyDatabase(t *testing.T) {
+	historical := openManagedHistory(t, prepareManagedDatabase(t))
+	handler := httpapi.New(
+		store.NewMemory(), http.NotFoundHandler(),
+		httpapi.WithHistory(historical),
+		httpapi.WithBuildInfo(buildinfo.Info{Release: "v9.8.7", Commit: "abc123"}),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/readyz", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	var payload struct {
+		OK       bool   `json:"ok"`
+		Database string `json:"database"`
+		Release  string `json:"release"`
+		Commit   string `json:"commit"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || payload.Database != "ready" || payload.Release != "v9.8.7" || payload.Commit != "abc123" {
+		t.Fatalf("unexpected readiness payload: %+v", payload)
+	}
+}
+
+func TestReadinessRejectsUnavailableDatabaseWithoutLeakingDetails(t *testing.T) {
+	historical := openManagedHistory(t, prepareManagedDatabase(t))
+	if err := historical.Close(); err != nil {
+		t.Fatal(err)
+	}
+	handler := httpapi.New(store.NewMemory(), http.NotFoundHandler(), httpapi.WithHistory(historical))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/readyz", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+	body := strings.ToLower(res.Body.String())
+	for _, forbidden := range []string{"turso_auth_token", "turso_database_url", "password", "libsql://"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("readiness response leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestReadinessRejectsStaleSchema(t *testing.T) {
+	path := prepareManagedDatabase(t)
+	admin, err := history.OpenAdminExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.DB().Exec(`DROP TABLE quality_feedback`); err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	if err := admin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	historical := openManagedHistory(t, path)
+	handler := httpapi.New(store.NewMemory(), http.NotFoundHandler(), httpapi.WithHistory(historical))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/readyz", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", res.Code, res.Body.String())
+	}
+}
+
+func prepareManagedDatabase(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "managed.db")
+	admin, err := history.OpenAdminExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
+		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			_ = admin.Close()
+			t.Fatal(err)
+		}
+		if err := sqlscript.Execute(context.Background(), admin.DB(), string(migration)); err != nil {
+			_ = admin.Close()
+			t.Fatalf("apply test migration %s: %v", name, err)
+		}
+	}
+	if err := admin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func openManagedHistory(t *testing.T, path string) *history.Store {
+	t.Helper()
+	historical, err := history.OpenExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = historical.Close() })
+	return historical
 }
