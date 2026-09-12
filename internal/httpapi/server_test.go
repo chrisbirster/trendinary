@@ -247,15 +247,25 @@ func prepareManagedDatabase(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"00001_baseline.sql", "00002_following_intelligence.sql"} {
-		migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
+	migrations, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.sql"))
+	if err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	if len(migrations) == 0 {
+		_ = admin.Close()
+		t.Fatal("no test migrations found")
+	}
+	for _, migrationPath := range migrations {
+		migration, err := os.ReadFile(migrationPath)
 		if err != nil {
 			_ = admin.Close()
 			t.Fatal(err)
 		}
-		if err := sqlscript.Execute(context.Background(), admin.DB(), string(migration)); err != nil {
+		up := strings.SplitN(string(migration), "-- +goose Down", 2)[0]
+		if err := sqlscript.Execute(context.Background(), admin.DB(), up); err != nil {
 			_ = admin.Close()
-			t.Fatalf("apply test migration %s: %v", name, err)
+			t.Fatalf("apply test migration %s: %v", filepath.Base(migrationPath), err)
 		}
 	}
 	if err := admin.Close(); err != nil {
