@@ -16,7 +16,7 @@ const rollingEvidenceWindow = 24 * time.Hour
 
 // RunWithSourcesV2 is the calibrated multi-source path. Detection Quality v3
 // builds on this pipeline by persisting cluster memberships for human replay
-// evaluation and scoring the resulting stable entities with Trendinary Score v3.
+// evaluation and scoring the resulting stable entities with Trendinary Score v4.
 func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extra []DiscoverySource) (Result, error) {
 	if s.history == nil || s.memory == nil {
 		return Result{}, fmt.Errorf("scanner dependencies are incomplete")
@@ -58,7 +58,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	filtered := filterDiscoveryNoise(discovery)
 	discovery = filtered.Signals
 	if filtered.Suppressed > 0 {
-		warnings = append(warnings, fmt.Sprintf("noise controls suppressed %d repeated/flood signals", filtered.Suppressed))
+		warnings = append(warnings, fmt.Sprintf("noise controls suppressed %d repeated/flood/low-information signals", filtered.Suppressed))
 	}
 	if len(discovery) == 0 {
 		if hnErr != nil {
@@ -66,16 +66,17 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		}
 		return Result{}, fmt.Errorf("no discovery signals available")
 	}
+
 	clustered := engine.ClusterSignalsV2(discovery, s.config.ClusterThreshold)
 	candidates := make([]engine.Cluster, 0, len(clustered))
 	for _, cluster := range clustered {
-		if candidateClusterV2(cluster) {
+		if chartCandidateCluster(cluster) {
 			candidates = append(candidates, cluster)
 		}
 	}
 	seedClusters := strongestClusters(candidates, maxCandidateClusters)
 	if len(seedClusters) == 0 {
-		return Result{Signals: len(discovery), Warnings: append(warnings, "no clusters met detection-quality v3 candidate gate")}, nil
+		return Result{Signals: len(discovery), Warnings: append(warnings, "no clusters met the Top 20 chart candidate gate")}, nil
 	}
 
 	enriched := append([]engine.Cluster(nil), seedClusters...)
@@ -163,6 +164,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		}
 		trends = append(trends, trend)
 	}
+
 	sort.SliceStable(trends, func(i, j int) bool {
 		if trends[i].Score == trends[j].Score {
 			return trends[i].Slug < trends[j].Slug
@@ -174,6 +176,11 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	}
 	for i := range trends {
 		trends[i].Rank = i + 1
+	}
+	if charted, err := s.history.ApplyChart(ctx, trends, now); err != nil {
+		warnings = append(warnings, fmt.Sprintf("persist chart: %v", err))
+	} else {
+		trends = charted
 	}
 	s.memory.ReplaceTrends(trends)
 	return Result{Signals: len(allSignals), Clusters: len(enriched), Trends: len(trends), Warnings: warnings}, nil

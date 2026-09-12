@@ -31,6 +31,11 @@ type Entry struct {
 // cannot silently turn into an aggressive crawler.
 func Default() []Entry {
 	return []Entry{
+		// Google Trends exposes an official Trending Now RSS export. It is used as
+		// an attention/corroboration signal; the private alpha API can replace or
+		// enrich this feed when Trendinary receives approved access.
+		{ID: "google-trends-us", Name: "Google Trends · Trending Now (US)", Kind: "rss", URL: "https://trends.google.com/trending/rss?geo=US", TermsURL: "https://trends.google.com/trending", Policy: PolicyOfficialRSS, Cadence: 15 * time.Minute, Enabled: true},
+
 		// WIRED publishes these feeds on its official RSS directory.
 		{ID: "wired-top", Name: "WIRED · Top Stories", Kind: "rss", URL: "https://www.wired.com/feed/rss", TermsURL: "https://www.wired.com/about/rss-feeds/", Policy: PolicyOfficialRSS, Cadence: 20 * time.Minute, Enabled: true},
 		{ID: "wired-business", Name: "WIRED · Business", Kind: "rss", URL: "https://www.wired.com/feed/category/business/latest/rss", TermsURL: "https://www.wired.com/about/rss-feeds/", Policy: PolicyOfficialRSS, Cadence: 30 * time.Minute, Enabled: true},
@@ -101,6 +106,7 @@ func Default() []Entry {
 		{ID: "ap-media-api", Name: "Associated Press Media API", Kind: "api", URL: "https://api.ap.org/media/v/", TermsURL: "https://api.ap.org/media/v/docs/Getting_Started_API.htm", Policy: PolicyLicenseRequired, Cadence: time.Hour, Enabled: false},
 		{ID: "youtube-api", Name: "YouTube Data API", Kind: "api", URL: "https://www.googleapis.com/youtube/v3/", TermsURL: "https://developers.google.com/youtube/v3/", Policy: PolicyOfficialAPI, Cadence: time.Hour, Enabled: false},
 		{ID: "newsdata-api", Name: "NewsData", Kind: "api", URL: "https://newsdata.io/api/1/latest", TermsURL: "https://newsdata.io/documentation", Policy: PolicyOfficialAPI, Cadence: 2 * time.Hour, Enabled: false},
+		{ID: "google-trends-api", Name: "Google Trends API (alpha)", Kind: "api", URL: "https://developers.google.com/search/apis/trends", TermsURL: "https://developers.google.com/search/apis/trends", Policy: PolicyOfficialAPI, Cadence: time.Hour, Enabled: false},
 	}
 }
 

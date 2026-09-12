@@ -12,6 +12,8 @@ import (
 var genericEntityTokens = map[string]struct{}{
 	"ask": {}, "breaking": {}, "how": {}, "list": {}, "new": {}, "show": {},
 	"the": {}, "this": {}, "today": {}, "what": {}, "when": {}, "where": {}, "why": {},
+	"more": {}, "less": {}, "yes": {}, "no": {}, "now": {}, "yeah": {}, "yep": {},
+	"nope": {}, "okay": {}, "ok": {}, "same": {}, "true": {}, "really": {}, "maybe": {},
 }
 
 // ClusterSignalsV2 performs deterministic event resolution directly across

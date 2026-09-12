@@ -116,31 +116,63 @@ type Explanation struct {
 
 // TrendQuality exposes the normalized inputs that make an early signal useful.
 // PEEPScore intentionally emphasizes slope and spread rather than raw fame.
+// PublisherBreadth and PlatformBreadth are the v4 names; SourceBreadth and
+// CommunityBreadth remain for API compatibility with pre-v4 clients.
 type TrendQuality struct {
 	Attention        float64  `json:"attention"`
 	Velocity         float64  `json:"velocity"`
 	SourceBreadth    float64  `json:"source_breadth"`
 	CommunityBreadth float64  `json:"community_breadth"`
+	PublisherBreadth float64  `json:"publisher_breadth"`
+	PlatformBreadth  float64  `json:"platform_breadth"`
 	Novelty          float64  `json:"novelty"`
 	Confidence       float64  `json:"confidence"`
 	PeepScore        int      `json:"peep_score"`
 	WhyWatching      []string `json:"why_watching,omitempty"`
 }
 
+// TrendProvenance separates who published an observation from where Trendinary
+// found it. Ten section feeds from the same publisher therefore count as one
+// publisher, while GitHub/Bluesky accounts can be independent publishers on a
+// shared platform.
+type TrendProvenance struct {
+	PublisherCount    int      `json:"publisher_count"`
+	PlatformCount     int      `json:"platform_count"`
+	SignalCount       int      `json:"signal_count"`
+	Publishers        []string `json:"publishers,omitempty"`
+	Platforms         []string `json:"platforms,omitempty"`
+	DiscoveryChannels []string `json:"discovery_channels,omitempty"`
+}
+
+// ChartStats gives the Top 20 continuity semantics users expect from a chart.
+// Status is NEW for a first appearance, RE for a re-entry, otherwise empty.
+type ChartStats struct {
+	Movement         string `json:"movement"`
+	Status           string `json:"status,omitempty"`
+	PreviousRank     int    `json:"previous_rank,omitempty"`
+	PeakRank         int    `json:"peak_rank,omitempty"`
+	TotalScans       int    `json:"total_scans,omitempty"`
+	ConsecutiveScans int    `json:"consecutive_scans,omitempty"`
+	NumberOneScans   int    `json:"number_one_scans,omitempty"`
+}
+
 type Trend struct {
-	ID       string       `json:"id,omitempty"`
-	Slug     string       `json:"slug"`
-	Aliases  []string     `json:"aliases,omitempty"`
-	Rank     int          `json:"rank"`
-	Name     string       `json:"name"`
-	Category string       `json:"category"`
-	Score    int          `json:"score"`
-	Change   string       `json:"change"`
-	Status   string       `json:"status"`
-	Reason   string       `json:"reason"`
-	Started  string       `json:"started"`
-	Vibe     string       `json:"vibe"`
-	Quality  TrendQuality `json:"quality"`
+	ID             string       `json:"id,omitempty"`
+	Slug           string       `json:"slug"`
+	Aliases        []string     `json:"aliases,omitempty"`
+	Rank           int          `json:"rank"`
+	Name           string       `json:"name"`
+	Category       string       `json:"category"`
+	Score          int          `json:"score"`
+	Change         string       `json:"change"`
+	Status         string       `json:"status"`
+	ConfidenceTier string       `json:"confidence_tier"`
+	Reason         string       `json:"reason"`
+	Started        string       `json:"started"`
+	Vibe           string       `json:"vibe"`
+	Quality        TrendQuality `json:"quality"`
+	Provenance     TrendProvenance `json:"provenance"`
+	Chart          ChartStats      `json:"chart"`
 
 	Sources     []Source         `json:"sources"`
 	Timeline    []TimelineEvent  `json:"timeline,omitempty"`

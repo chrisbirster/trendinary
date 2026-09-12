@@ -83,10 +83,31 @@ export type TrendQuality = {
   velocity: number;
   source_breadth: number;
   community_breadth: number;
+  publisher_breadth: number;
+  platform_breadth: number;
   novelty: number;
   confidence: number;
   peep_score: number;
   why_watching?: string[];
+};
+
+export type TrendProvenance = {
+  publisher_count: number;
+  platform_count: number;
+  signal_count: number;
+  publishers?: string[];
+  platforms?: string[];
+  discovery_channels?: string[];
+};
+
+export type ChartStats = {
+  movement: string;
+  status?: "NEW" | "RE";
+  previous_rank?: number;
+  peak_rank?: number;
+  total_scans?: number;
+  consecutive_scans?: number;
+  number_one_scans?: number;
 };
 
 export type Trend = {
@@ -99,10 +120,13 @@ export type Trend = {
   score: number;
   change: string;
   status: "BREAKING" | "RISING" | "EMERGING" | "PEAKING" | "COOLING" | "RESURFACING";
+  confidence_tier: "EMERGING" | "CORROBORATED" | "CONFIRMED";
   reason: string;
   started: string;
   vibe: string;
   quality: TrendQuality;
+  provenance: TrendProvenance;
+  chart: ChartStats;
   sources: TrendSource[];
   timeline?: TimelineEvent[];
   top_voices?: ActorProfile[];

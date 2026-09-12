@@ -34,11 +34,16 @@ function TrendRows(props: { items: Trend[] }) {
             <div {...sx(styles.rank)}>{String(trend.rank).padStart(2, "0")}</div>
             <div>
               <div {...sx(styles.trendName)}>{trend.name}</div>
-              <div {...sx(styles.trendMeta)}>{trend.category} · {trend.status}</div>
+              <div {...sx(styles.trendMeta)}>
+                {trend.confidence_tier} · {trend.provenance.publisher_count} publishers · {trend.provenance.platform_count} platforms
+              </div>
             </div>
-            <div {...sx(styles.change)}>{trend.change}</div>
+            <div {...sx(styles.change)}>{trend.chart.movement || trend.change}</div>
             <div {...sx(styles.score)}>{trend.score}</div>
-            <div {...sx(styles.reason)}>{trend.reason}</div>
+            <div {...sx(styles.reason)}>
+              {(trend.provenance.publishers ?? []).slice(0, 3).join(" · ") || trend.reason}
+              {trend.provenance.signal_count > 0 ? ` · ${trend.provenance.signal_count} signals` : ""}
+            </div>
             <div {...sx(styles.arrow)}>↗</div>
           </a>
         )}
@@ -99,7 +104,7 @@ function TrendHistoryPanel(props: { items: TrendSnapshot[]; error?: string }) {
             <div {...sx(historyStyles.metrics)}>
               <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Attention</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.attention)}</div></div>
               <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Velocity</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.velocity)}</div></div>
-              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Source breadth</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.source_breadth)}</div></div>
+              <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Publisher breadth</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.source_breadth)}</div></div>
               <div {...sx(historyStyles.metric)}><div {...sx(historyStyles.metricLabel)}>Confidence</div><div {...sx(historyStyles.metricValue)}>{percent(snapshot().score.confidence)}</div></div>
             </div>
           )}
@@ -116,21 +121,21 @@ export function HomePage() {
     <>
       <section {...sx(styles.hero)}>
         <div>
-          <div {...sx(styles.eyebrow)}>LIVE INTERNET SCOREBOARD · API V1</div>
+          <div {...sx(styles.eyebrow)}>TRENDINARY TOP 20 · LIVE INTERNET CHART</div>
           <h1 {...sx(styles.heroTitle)}>Know what's <span {...sx(styles.heroAccent)}>happening.</span><br />Know why.</h1>
-          <p {...sx(styles.heroCopy)}>Trendinary scans public signals across the web to find what is accelerating, explain why it matters, and show you what everyone else is about to talk about.</p>
+          <p {...sx(styles.heroCopy)}>A Billboard-style chart of internet attention, ranked from public news, social, search, developer, and knowledge signals with confidence kept separate from popularity.</p>
         </div>
         <div {...sx(styles.statusCard)}>
-          <div {...sx(styles.statusLabel)}>Scanner status</div>
-          <div {...sx(styles.statusValue)}>LIVE BASELINES</div>
-          <div {...sx(styles.statusSub)}>The Go scanner records live source observations, compares them with stored history, and publishes a versioned Trendinary Score.</div>
+          <div {...sx(styles.statusLabel)}>Chart status</div>
+          <div {...sx(styles.statusValue)}>TOP 20 LIVE</div>
+          <div {...sx(styles.statusSub)}>NEW and RE mark chart entries. Arrows show movement. Publisher and platform counts show how broadly each trend is corroborated.</div>
         </div>
       </section>
       <ProductTabs />
       <section {...sx(styles.section)}>
         <div {...sx(styles.sectionHeader)}>
-          <div><h2 {...sx(styles.sectionTitle)}>Happening now</h2><p {...sx(styles.sectionCopy)}>Ranked by attention × velocity × breadth × novelty.</p></div>
-          <div {...sx(styles.eyebrow)}>{trends.loading() ? "SCANNING" : "API CONNECTED"}</div>
+          <div><h2 {...sx(styles.sectionTitle)}>Trendinary Top 20</h2><p {...sx(styles.sectionCopy)}>Ranked by attention × velocity × publisher breadth × platform breadth × novelty. Confidence is shown separately.</p></div>
+          <div {...sx(styles.eyebrow)}>{trends.loading() ? "SCANNING" : `${trends.items().length} CHARTED`}</div>
         </div>
         <ApiError value={trends.error()} />
         <Show when={!trends.loading()} fallback={<LoadingScoreboard />}>
@@ -151,7 +156,7 @@ export function HomePage() {
 
 export function PeepPage() {
   const trends = useTrendList();
-  const emerging = () => trends.items().filter((trend: Trend) => trend.status === "EMERGING" || trend.status === "RISING").slice(0, 4);
+  const emerging = () => trends.items().filter((trend: Trend) => trend.confidence_tier === "EMERGING" || trend.status === "EMERGING" || trend.status === "RISING").slice(0, 12);
 
   return (
     <>
@@ -221,8 +226,8 @@ export function TrendPage() {
         {(current) => (
           <>
             <section {...sx(styles.detailHero)}>
-              <div><div {...sx(styles.eyebrow)}>{current().category} · {current().status} · STARTED {current().started}</div><h1 {...sx(styles.detailTitle)}>{current().name}</h1><p {...sx(styles.heroCopy)}>{current().reason}</p><div {...sx(styles.chips)}><For each={current().sources}>{(source) => <a href={source.url} {...sx(styles.chip)}>{source.name}{source.bias ? ` · ${source.bias.label.toUpperCase()}` : ""}</a>}</For></div></div>
-              <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Trendinary score</div><div {...sx(styles.scoreBig)}>{current().score}</div><div {...sx(styles.change)} style={{ "text-align": "left", "margin-top": "8px" }}>{current().change} velocity</div><div {...sx(styles.statusSub)} style={{ "margin-top": "14px" }}>VIBE: {current().vibe}</div></div>
+              <div><div {...sx(styles.eyebrow)}>#{current().rank} · {current().chart.movement || "—"} · {current().confidence_tier} · {current().status}</div><h1 {...sx(styles.detailTitle)}>{current().name}</h1><p {...sx(styles.heroCopy)}>{current().reason}</p><div {...sx(styles.chips)}><For each={current().provenance.publishers ?? []}>{(publisher) => <span {...sx(styles.chip)}>{publisher}</span>}</For></div></div>
+              <div {...sx(styles.statusCard)}><div {...sx(styles.statusLabel)}>Trendinary score</div><div {...sx(styles.scoreBig)}>{current().score}</div><div {...sx(styles.change)} style={{ "text-align": "left", "margin-top": "8px" }}>{current().provenance.publisher_count} publishers · {current().provenance.platform_count} platforms</div><div {...sx(styles.statusSub)} style={{ "margin-top": "14px" }}>PEAK #{current().chart.peak_rank || current().rank} · {current().chart.total_scans || 1} scans on chart</div></div>
             </section>
             <div {...sx(styles.actionGrid)}><a {...sx(styles.actionCard)} href="#wtf">WTF?<span {...sx(styles.actionLabel)}>Why's this trending?</span></a><a {...sx(styles.actionCard)} href="#lore">LORE<span {...sx(styles.actionLabel)}>Give me the backstory.</span></a><a {...sx(styles.actionCard)} href="#vibe">VIBE<span {...sx(styles.actionLabel)}>What does it feel like?</span></a><a {...sx(styles.actionCard)} href="#timeline">TIMELINE<span {...sx(styles.actionLabel)}>How did it spread?</span></a></div>
             <section {...sx(styles.section)}>

@@ -42,7 +42,7 @@ test("production image serves a healthy empty application without demo trends", 
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Know what's happening/i })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Happening now" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Trendinary Top 20" })).toBeVisible();
   await expect(page.getByRole("link", { name: /AT Protocol/i })).toHaveCount(0);
   await expect(page.getByRole("link", { name: /That Blue Chair/i })).toHaveCount(0);
 });

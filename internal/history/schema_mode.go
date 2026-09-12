@@ -17,6 +17,7 @@ var externallyManagedDBs sync.Map // map[*sql.DB]struct{}
 var applicationSchemaTables = []string{
 	"signals",
 	"trend_snapshots",
+	"trend_chart_entries",
 	"stream_cursors",
 	"trend_entities",
 	"trend_entity_terms",
