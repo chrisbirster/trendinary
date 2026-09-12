@@ -1,0 +1,18 @@
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+ARG GOOSE_VERSION=v3.27.3
+RUN GOBIN=/out go install -tags='no_postgres no_mysql no_sqlite3 no_ydb no_mssql no_clickhouse no_vertica no_azuresql' github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/migrationplan ./cmd/migrationplan
+RUN CGO_ENABLED=0 go build -trimpath -o /out/migrationplan ./cmd/migrationplan
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates
+WORKDIR /workspace
+COPY --from=build /out/goose /usr/local/bin/goose
+COPY --from=build /out/migrationplan /usr/local/bin/migrationplan
+COPY migrations ./migrations
+COPY scripts/goose-fly-entrypoint.sh /usr/local/bin/goose-fly-entrypoint
+RUN chmod +x /usr/local/bin/goose-fly-entrypoint
+ENTRYPOINT ["/usr/local/bin/goose-fly-entrypoint"]

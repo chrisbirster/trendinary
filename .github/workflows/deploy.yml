@@ -17,8 +17,9 @@ on:
 permissions:
   contents: read
 
-# A single production schema/deploy sequence may run at a time. Atlas finishes
-# before Fly is touched, so application machines never race each other on DDL.
+# A single production migration/deploy sequence may run at a time. Goose runs
+# in a one-off Fly Machine that inherits the app's Turso secrets and exits before
+# any web Machine is deployed, so application startup never races schema changes.
 concurrency:
   group: trendinary-production
   cancel-in-progress: false
@@ -54,21 +55,14 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      - uses: ariga/setup-atlas@2f3c785c89a15e1c0d07bcae3900fb5feb969eea # v0
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
       - run: npm ci
       - name: Verify supply-chain policy
         run: bash scripts/verify-supply-chain.sh
-      - name: Verify Turso migration credentials
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$TURSO_DATABASE_URL" || { echo "::error::Missing production TURSO_DATABASE_URL GitHub environment secret"; exit 1; }
-          test -n "$TURSO_AUTH_TOKEN" || { echo "::error::Missing production TURSO_AUTH_TOKEN GitHub environment secret"; exit 1; }
       - name: Verify Turso Fly runtime secrets
         shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
           set -euo pipefail
           secret_table="$(flyctl secrets list --app trendinary)"
@@ -78,15 +72,10 @@ jobs:
               exit 1
             fi
           done
+      - name: Apply database migrations with Goose inside Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-      - name: Apply database schema with Atlas
-        env:
-          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-        run: |
-          set -euo pipefail
-          atlas schema apply --env production --auto-approve
+        run: bash scripts/run-goose-fly-machine.sh apply
       - name: Deploy Go origin to Fly.io
         run: |
           set -euo pipefail

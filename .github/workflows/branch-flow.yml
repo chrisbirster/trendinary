@@ -11,27 +11,39 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Validate PR branch direction
         env:
           BASE: ${{ github.base_ref }}
           HEAD: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          if [ "$BASE" = "main" ]; then
-            if [ "$HEAD" != "dev" ] && [[ "$HEAD" != hotfix/* ]]; then
-              echo "::error::main is release-only. PRs to main must come from dev or hotfix/*."
-              exit 1
-            fi
-          fi
 
           if [[ "$HEAD" == feature/* ]] && [ "$BASE" != "dev" ]; then
             echo "::error::feature/* pull requests must target dev."
             exit 1
           fi
 
-          if [ "$HEAD" = "dev" ] && [ "$BASE" != "main" ]; then
-            echo "::error::dev may only be used as a PR head for a release into main."
+          if [ "$BASE" = "main" ] && [ "$HEAD" != "dev" ]; then
+            echo "::error::main is release-only. PRs to main must come from dev."
             exit 1
+          fi
+
+          if [ "$HEAD" = "dev" ]; then
+            if [ "$BASE" != "main" ]; then
+              echo "::error::dev may only be used as a PR head for a release into main."
+              exit 1
+            fi
+            git fetch --tags --force origin
+            RELEASE_TAG="$(git tag --points-at "$HEAD_SHA" --list 'v*' | head -n 1)"
+            if [ -z "$RELEASE_TAG" ]; then
+              echo "::error::dev -> main requires a release tag pointing at the exact dev head ($HEAD_SHA)."
+              exit 1
+            fi
+            echo "Release tag found: $RELEASE_TAG"
           fi
 
           echo "Branch flow valid: $HEAD -> $BASE"

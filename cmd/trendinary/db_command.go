@@ -37,6 +37,6 @@ func init() {
 	if closeErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: close %s database after committed reset: %v\n", backend, closeErr)
 	}
-	fmt.Fprintf(os.Stdout, "Trendinary %s database reset complete. Run Atlas before starting the application.\n", backend)
+	fmt.Fprintf(os.Stdout, "Trendinary %s database reset complete. Run Goose migrations before starting the application.\n", backend)
 	os.Exit(0)
 }

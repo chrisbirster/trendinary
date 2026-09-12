@@ -49,7 +49,7 @@ func openHistory() (*history.Store, string, error) {
 
 	// The explicit reset command must be able to open a database even when the
 	// schema is absent or incomplete. Every normal application command requires
-	// Atlas to have made the schema ready first.
+	// Goose migrations to have made the schema ready first.
 	if !resetCommand {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		verifyErr := store.VerifySchema(ctx)

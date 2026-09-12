@@ -2,6 +2,7 @@
 set -euo pipefail
 
 IMAGE="${TRENDINARY_E2E_IMAGE:-trendinary:e2e}"
+MIGRATION_IMAGE="${TRENDINARY_MIGRATION_IMAGE:-trendinary:e2e-migrate}"
 APP_CONTAINER="trendinary-e2e-app-$$"
 LIBSQL_CONTAINER="trendinary-e2e-libsql-$$"
 NETWORK="trendinary-e2e-net-$$"
@@ -41,9 +42,13 @@ for attempt in $(seq 1 80); do
   sleep 0.25
 done
 
-TRENDINARY_ATLAS_DOCKER_NETWORK="$NETWORK" \
-TRENDINARY_ATLAS_LIBSQL_TARGET="${LIBSQL_HOST}:8080" \
-  bash scripts/atlas-apply-local-libsql.sh "$LIBSQL_PORT" "$TOKEN"
+docker build -f Dockerfile.migrate -t "$MIGRATION_IMAGE" .
+docker run --rm \
+  --network "$NETWORK" \
+  -e TURSO_DATABASE_URL="http://${LIBSQL_HOST}:8080" \
+  -e TURSO_AUTH_TOKEN="$TOKEN" \
+  -e GOOSE_MODE=apply \
+  "$MIGRATION_IMAGE"
 
 docker build -t "$IMAGE" .
 docker run -d --name "$APP_CONTAINER" \
