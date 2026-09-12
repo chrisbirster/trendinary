@@ -1,11 +1,24 @@
 package scanner
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/model"
+	"github.com/chrisbirster/trendinary/internal/store"
 )
+
+type top20FixtureSource struct {
+	values []model.Signal
+}
+
+func (s top20FixtureSource) Name() string { return "top20-fixture" }
+func (s top20FixtureSource) Discover(context.Context) ([]model.Signal, error) {
+	return append([]model.Signal(nil), s.values...), nil
+}
 
 func TestLowInformationBlueskyReplyIsSuppressed(t *testing.T) {
 	values := []model.Signal{
@@ -77,5 +90,54 @@ func TestGoogleTrendsHasDistinctPlatformProvenance(t *testing.T) {
 	}})
 	if got.PublisherCount != 1 || got.PlatformCount != 1 || len(got.Platforms) != 1 || got.Platforms[0] != "Google Trends" {
 		t.Fatalf("unexpected Google Trends provenance: %+v", got)
+	}
+}
+
+func TestScannerPublishesRanksOneThroughTwenty(t *testing.T) {
+	historical, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer historical.Close()
+	memory := store.NewMemory()
+
+	values := make([]model.Signal, 0, 20)
+	for i := 1; i <= 20; i++ {
+		values = append(values, model.Signal{
+			ID:               fmt.Sprintf("rss:fixture-%02d", i),
+			Source:           model.Source{Name: fmt.Sprintf("Publisher %02d", i), Domain: fmt.Sprintf("publisher-%02d.example", i)},
+			DiscoveryChannel: "rss",
+			Title:            fmt.Sprintf("Quasar%02d launches a distinct public project with unusual new attention", i),
+			PublishedAt:      "2026-09-12T20:00:00Z",
+		})
+	}
+
+	s := New(nil, nil, historical, memory, Config{
+		PublishedTrendLimit: 20,
+		ClusterThreshold:    0.95,
+		SourceUniverse:      8,
+	})
+	result, err := s.RunWithSourcesV2(context.Background(), nil, []DiscoverySource{top20FixtureSource{values: values}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trends != 20 {
+		t.Fatalf("published trends = %d, want 20 (warnings=%v)", result.Trends, result.Warnings)
+	}
+	trends := memory.Trends()
+	if len(trends) != 20 {
+		t.Fatalf("memory chart length = %d, want 20", len(trends))
+	}
+	for i, trend := range trends {
+		want := i + 1
+		if trend.Rank != want {
+			t.Fatalf("chart position %d has rank %d", want, trend.Rank)
+		}
+		if trend.ConfidenceTier == "" {
+			t.Fatalf("chart position %d missing confidence tier", want)
+		}
+		if trend.Provenance.PublisherCount < 1 || trend.Provenance.PlatformCount < 1 {
+			t.Fatalf("chart position %d missing provenance: %+v", want, trend.Provenance)
+		}
 	}
 }
