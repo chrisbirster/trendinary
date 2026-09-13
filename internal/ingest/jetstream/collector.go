@@ -18,9 +18,12 @@ import (
 )
 
 const (
-	CursorName      = "atproto-jetstream-v2-posts"
-	postsCollection = "app.bsky.feed.post"
-	defaultHost     = "https://jetstream.us-east.bsky.network"
+	CursorName                 = "atproto-jetstream-v2-posts"
+	postsCollection            = "app.bsky.feed.post"
+	defaultHost                = "https://jetstream.us-east.bsky.network"
+	defaultStreamStaleAfter    = 3 * time.Minute
+	maxStreamWatchdogInterval  = 30 * time.Second
+	minStreamWatchdogInterval  = 10 * time.Millisecond
 )
 
 var (
@@ -29,10 +32,11 @@ var (
 )
 
 type Config struct {
-	Host      string
-	BatchSize int
-	Status    *runtimeinfo.Status
-	APIKey    string
+	Host       string
+	BatchSize  int
+	Status     *runtimeinfo.Status
+	APIKey     string
+	StaleAfter time.Duration
 }
 
 type Collector struct {
@@ -47,6 +51,9 @@ func New(historical *history.Store, recentSignals *recent.Store, config Config) 
 	}
 	if config.BatchSize <= 0 {
 		config.BatchSize = 128
+	}
+	if config.StaleAfter <= 0 {
+		config.StaleAfter = defaultStreamStaleAfter
 	}
 	config.APIKey = strings.TrimSpace(config.APIKey)
 	if config.APIKey == "" {
@@ -95,6 +102,59 @@ func liveCursorTooOld(err error) bool {
 	return strings.Contains(message, "live cursor too old") || strings.Contains(message, "cursor too old")
 }
 
+func watchdogInterval(staleAfter time.Duration) time.Duration {
+	interval := staleAfter / 4
+	if interval > maxStreamWatchdogInterval {
+		interval = maxStreamWatchdogInterval
+	}
+	if interval < minStreamWatchdogInterval {
+		interval = minStreamWatchdogInterval
+	}
+	return interval
+}
+
+// watchLiveProgress closes a live client when the socket remains connected but
+// no real event advances for too long. Close is explicitly safe concurrently
+// with Events and makes the iterator return, allowing the outer reconnect loop
+// to establish a fresh subscription from the durable cursor.
+func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	if c == nil || client == nil || c.config.Status == nil || c.config.StaleAfter <= 0 {
+		return
+	}
+	ticker := time.NewTicker(watchdogInterval(c.config.StaleAfter))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			snapshot := c.config.Status.Snapshot().Stream
+			if !snapshot.Connected {
+				continue
+			}
+			lastProgress := snapshot.LastEventAt
+			// LastEventAt can belong to the previous connection. Give every fresh
+			// socket a complete stale window to deliver its first real event.
+			if lastProgress.IsZero() || lastProgress.Before(connectedAt) {
+				lastProgress = connectedAt
+			}
+			if time.Since(lastProgress) < c.config.StaleAfter {
+				continue
+			}
+			slog.Warn("jetstream stream stalled; recycling live subscription",
+				"host", c.config.Host,
+				"last_event_at", snapshot.LastEventAt,
+				"stale_after", c.config.StaleAfter,
+			)
+			_ = client.Close()
+			return
+		}
+	}
+}
+
 // Run consumes app.bsky.feed.post commits until the context is cancelled or
 // Jetstream reports a terminal failure. When a durable cursor exists and an
 // archive API key is configured, the v2 client replays from that sequence and
@@ -128,10 +188,14 @@ func (c *Collector) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("subscribe jetstream: %w", err)
 		}
+		connectedAt := time.Now().UTC()
 		c.config.Status.StreamConnected(c.config.Host)
 		if hasCursor {
 			c.config.Status.StreamBatch(cursor, 0, time.Time{})
 		}
+		watchdogStop := make(chan struct{})
+		watchdogDone := make(chan struct{})
+		go c.watchLiveProgress(ctx, client, connectedAt, watchdogStop, watchdogDone)
 
 		restartAtLiveTip := false
 		for batch, streamErr := range client.Events(ctx) {
@@ -146,6 +210,8 @@ func (c *Collector) Run(ctx context.Context) error {
 						restartAtLiveTip = true
 						break
 					}
+					close(watchdogStop)
+					<-watchdogDone
 					_ = client.Close()
 					return fmt.Errorf("%w: %v", ErrFatal, streamErr)
 				}
@@ -157,10 +223,14 @@ func (c *Collector) Run(ctx context.Context) error {
 				continue
 			}
 			if err := c.applyBatch(ctx, batch.Events(), batch.LastCursor()); err != nil {
+				close(watchdogStop)
+				<-watchdogDone
 				_ = client.Close()
 				return err
 			}
 		}
+		close(watchdogStop)
+		<-watchdogDone
 		_ = client.Close()
 
 		if restartAtLiveTip {
@@ -232,7 +302,7 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 	for _, id := range upsertIDs {
 		values = append(values, upserts[id].signal)
 	}
-	if err := c.history.RecordSignals(ctx, values); err != nil {
+	if err := c.history.RecordSignalsBatch(ctx, values); err != nil {
 		return fmt.Errorf("persist jetstream signals: %w", err)
 	}
 
