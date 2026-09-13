@@ -21,6 +21,19 @@ type discoveryResult struct {
 	err    error
 }
 
+type discoveryTimeoutProvider interface {
+	DiscoveryTimeout() time.Duration
+}
+
+func discoveryTimeout(source DiscoverySource) time.Duration {
+	if provider, ok := source.(discoveryTimeoutProvider); ok {
+		if timeout := provider.DiscoveryTimeout(); timeout > 0 {
+			return timeout
+		}
+	}
+	return perSourceDiscoveryTimeout
+}
+
 // discoverExtraSources polls independent adapters concurrently while preserving
 // deterministic source order in the combined discovery slice. A slow publisher
 // gets its own timeout instead of consuming the scanner's entire run budget.
@@ -51,7 +64,7 @@ func discoverExtraSources(ctx context.Context, sources []DiscoverySource) ([]mod
 				return
 			}
 
-			sourceCtx, cancel := context.WithTimeout(ctx, perSourceDiscoveryTimeout)
+			sourceCtx, cancel := context.WithTimeout(ctx, discoveryTimeout(source))
 			defer cancel()
 			result.values, result.err = source.Discover(sourceCtx)
 			results[index] = result
