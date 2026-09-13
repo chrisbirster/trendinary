@@ -1,0 +1,71 @@
+name: v0.6.4 metadata bootstrap
+
+on:
+  push:
+    branches: [release/v0.6.4]
+    paths:
+      - .github/workflows/v0.6.4-metadata-bootstrap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: release/v0.6.4
+          fetch-depth: 0
+      - name: Update v0.6.4 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '0.6.4\n' > VERSION
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for name in ("package.json", "package-lock.json"):
+              path = Path(name)
+              data = json.loads(path.read_text())
+              data["version"] = "0.6.4"
+              if name == "package-lock.json":
+                  data["packages"][""]["version"] = "0.6.4"
+              path.write_text(json.dumps(data, indent=2) + "\n")
+
+          path = Path("CHANGELOG.md")
+          text = path.read_text()
+          marker = "## [Unreleased]\n"
+          section = """
+
+          ## [0.6.4] - 2026-09-13
+
+          ### Changed
+
+          - Bluesky Jetstream is now a bounded in-memory discovery stream instead of a raw Turso event archive; only scanner-selected trend evidence is persisted.
+          - Jetstream durable cursor checkpoints are rate-limited to a five-second cadence while preserving a forced final checkpoint on reconnect/shutdown boundaries.
+          - Production durable scoring is bounded to publish capacity, so a Top 20 scan performs remote candidate work for at most 20 shortlisted clusters.
+          - Identical signal UPSERTs are true no-ops, and existing trend memberships refresh at most hourly instead of every scan.
+
+          ### Fixed
+
+          - Added `idx_trend_signal_memberships_signal_id` so signal deletes and foreign-key cascades no longer scan memberships by the wrong key order.
+          - Credential-free public Jetstream resumes now abandon stale history after the freshness grace period even when the cursor continues advancing; authenticated archive replay remains allowed to catch up the full gap.
+          - Scanner persistence now happens after final Top 20 selection, eliminating durable writes for candidates that cannot be published.
+          - Added regression coverage proving raw Jetstream posts are not persisted and repeated unchanged evidence does not consume Turso writes.
+          """
+          section = "\n".join(line[10:] if line.startswith("          ") else line for line in section.splitlines()) + "\n"
+          if "## [0.6.4]" not in text:
+              if marker not in text:
+                  raise SystemExit("Unreleased changelog marker not found")
+              text = text.replace(marker, marker + section, 1)
+          path.write_text(text)
+          PY
+          rm .github/workflows/v0.6.4-metadata-bootstrap.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add VERSION package.json package-lock.json CHANGELOG.md .github/workflows/v0.6.4-metadata-bootstrap.yml
+          git commit -m 'Release v0.6.4'
+          git push origin HEAD:release/v0.6.4
