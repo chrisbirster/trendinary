@@ -1,0 +1,23 @@
+name: v0.6.0 deploy dispatch
+
+on:
+  push:
+    branches:
+      - "ops/v0.6.0-deploy"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.actor == 'chrisbirster'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref dev -f tag=v0.6.0
+          echo "Dispatched Deploy production for v0.6.0 from dev." >> "$GITHUB_STEP_SUMMARY"
