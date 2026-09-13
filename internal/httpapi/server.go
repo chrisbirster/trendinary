@@ -216,6 +216,7 @@ func (s *Server) streamHealth(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]any{
 			"jetstream": snapshot.Stream,
 			"scanner":   snapshot.Scanner,
+			"sources":   snapshot.Sources,
 			"window": map[string]any{
 				"signals": windowSize,
 			},
