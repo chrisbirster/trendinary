@@ -4,6 +4,23 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-12
+
+### Changed
+
+- Core discovery now warms Google Trends US, WIRED Top Stories, Ars Technica All, ABC News Top Stories, and TechCrunch on the first scanner pass while preserving staggered polling for the wider source fleet.
+- GitHub repository discovery now uses a higher minimum-star threshold, and GitHub-only multi-owner bursts no longer manufacture independent publisher breadth for Score v4 corroboration.
+
+### Fixed
+
+- Batched signal and trend-membership UPSERTs reduce remote libSQL round trips and prevent scanner and Jetstream persistence from exhausting the scanner runtime budget.
+- Independent discovery sources are polled concurrently with bounded per-source timeouts while preserving deterministic aggregation.
+- A stalled Bluesky Jetstream connection is recycled when cursor/event progress stops instead of remaining falsely connected indefinitely.
+- Jetstream cursor advancement counts as healthy replay progress even when replayed event timestamps are older than the live freshness window.
+- Chart persistence is now required for scan success so public trends cannot be published without durable `NEW`, `RE`, `▲`, or `▼` movement metadata.
+- Added regression coverage for real-libSQL batched writes, concurrent discovery, cold-start source bootstrapping, GitHub-only provenance discounting, and Jetstream progress detection.
+
+
 ## [0.6.0] - 2026-09-12
 
 ### Added
