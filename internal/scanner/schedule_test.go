@@ -80,12 +80,26 @@ func TestScheduledSourceBacksOffAndKeepsLastGoodBatch(t *testing.T) {
 	}
 }
 
-func TestScheduledSourceStaggersInitialPoll(t *testing.T) {
+func TestScheduledSourceStillStaggersNonWarmAPI(t *testing.T) {
 	fake := &scheduledFake{}
-	source := NewScheduledSource(fake, SourceMetadata{ID: "rss:wired", Name: "WIRED", Kind: "rss", Cadence: 30 * time.Minute})
+	source := NewScheduledSource(fake, SourceMetadata{ID: "other-api", Name: "Other API", Kind: "api", Cadence: 30 * time.Minute})
 	status := source.SourceStatus()
 	if status.NextRunAt.IsZero() || !status.NextRunAt.After(time.Now().UTC().Add(-time.Second)) {
 		t.Fatalf("initial next run not staggered: %+v", status)
+	}
+}
+
+func TestScheduledSourceWarmsAllRSSFeedsAtStartup(t *testing.T) {
+	fake := &scheduledFake{}
+	source := NewScheduledSource(fake, SourceMetadata{ID: "rss:wired", Name: "WIRED", Kind: "rss", Cadence: 30 * time.Minute})
+	if status := source.SourceStatus(); !status.NextRunAt.IsZero() {
+		t.Fatalf("rss next run = %s, want immediate startup poll", status.NextRunAt)
+	}
+	if _, err := source.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 1 {
+		t.Fatalf("rss calls = %d, want 1", fake.calls)
 	}
 }
 
@@ -101,6 +115,27 @@ func TestScheduledSourceBootstrapsCoreTrendFeeds(t *testing.T) {
 		}
 		if fake.calls != 1 {
 			t.Fatalf("%s calls = %d, want 1", id, fake.calls)
+		}
+	}
+}
+
+func TestScheduledSourceOptionalAPIsWarmAndUseAdapterSizedTimeouts(t *testing.T) {
+	cases := []struct {
+		id      string
+		timeout time.Duration
+	}{
+		{id: "gdelt", timeout: 16 * time.Second},
+		{id: "newsdata-api", timeout: 13 * time.Second},
+		{id: "youtube-api", timeout: 11 * time.Second},
+	}
+	for _, tc := range cases {
+		fake := &scheduledFake{}
+		source := NewScheduledSource(fake, SourceMetadata{ID: tc.id, Name: tc.id, Kind: "api", Cadence: time.Hour})
+		if status := source.SourceStatus(); !status.NextRunAt.IsZero() {
+			t.Fatalf("%s next run = %s, want immediate startup poll", tc.id, status.NextRunAt)
+		}
+		if got := source.DiscoveryTimeout(); got != tc.timeout {
+			t.Fatalf("%s timeout = %s, want %s", tc.id, got, tc.timeout)
 		}
 	}
 }
