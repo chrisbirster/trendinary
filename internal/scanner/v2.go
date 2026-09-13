@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/engine"
+	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/model"
 	"github.com/chrisbirster/trendinary/internal/recent"
 	"github.com/chrisbirster/trendinary/internal/signals"
@@ -104,8 +105,13 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		allSignals = append(allSignals, enriched[i].Signals...)
 	}
 	allSignals = deduplicateSignals(allSignals)
-	if err := s.history.RecordSignalsBatch(ctx, allSignals); err != nil {
-		return Result{}, fmt.Errorf("persist signals: %w", err)
+
+	type scoredCandidate struct {
+		trend    model.Trend
+		snapshot history.Snapshot
+		entity   history.Entity
+		current  engine.Cluster
+		evidence engine.Cluster
 	}
 
 	now := s.now().UTC()
@@ -113,15 +119,12 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	if calibrationErr != nil {
 		warnings = append(warnings, fmt.Sprintf("score calibration: %v", calibrationErr))
 	}
-	trends := make([]model.Trend, 0, len(enriched))
+	scored := make([]scoredCandidate, 0, len(enriched))
 	for _, cluster := range enriched {
 		entity, err := s.history.ResolveEntityStrict(ctx, clusterName(cluster), cluster.Key, engine.CanonicalTerms(cluster.Signals, 8), now)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("identity %s: %v", cluster.Key, err))
 			continue
-		}
-		if err := s.history.RecordTrendSignalsBatch(ctx, entity.ID, cluster.Signals, now); err != nil {
-			warnings = append(warnings, fmt.Sprintf("quality membership %s: %v", entity.ID, err))
 		}
 
 		historical, err := s.history.TrendSignals(ctx, entity.ID, now.Add(-rollingEvidenceWindow), 1000)
@@ -144,11 +147,41 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		trend.Slug = entity.Slug
 		trend.Aliases = entity.Aliases
 		trend.Name = clusterName(cluster)
-		if err := s.decorateTrend(ctx, &trend, entity, evidence, now); err != nil {
-			warnings = append(warnings, fmt.Sprintf("decorate %s: %v", entity.ID, err))
+		scored = append(scored, scoredCandidate{
+			trend: trend, snapshot: snapshot, entity: entity, current: current, evidence: evidence,
+		})
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].trend.Score == scored[j].trend.Score {
+			return scored[i].trend.Slug < scored[j].trend.Slug
 		}
-		if err := s.history.RecordSnapshot(ctx, snapshot); err != nil {
-			warnings = append(warnings, fmt.Sprintf("snapshot %s: %v", entity.ID, err))
+		return scored[i].trend.Score > scored[j].trend.Score
+	})
+	if len(scored) > s.config.PublishedTrendLimit {
+		scored = scored[:s.config.PublishedTrendLimit]
+	}
+
+	selectedSignals := make([]model.Signal, 0)
+	for _, candidate := range scored {
+		selectedSignals = append(selectedSignals, candidate.current.Signals...)
+	}
+	selectedSignals = deduplicateSignals(selectedSignals)
+	if err := s.history.RecordSignalsBatch(ctx, selectedSignals); err != nil {
+		return Result{}, fmt.Errorf("persist selected signals: %w", err)
+	}
+
+	trends := make([]model.Trend, 0, len(scored))
+	for _, candidate := range scored {
+		if err := s.history.RecordTrendSignalsBatch(ctx, candidate.entity.ID, candidate.current.Signals, now); err != nil {
+			warnings = append(warnings, fmt.Sprintf("quality membership %s: %v", candidate.entity.ID, err))
+		}
+		trend := candidate.trend
+		if err := s.decorateTrend(ctx, &trend, candidate.entity, candidate.evidence, now); err != nil {
+			warnings = append(warnings, fmt.Sprintf("decorate %s: %v", candidate.entity.ID, err))
+		}
+		if err := s.history.RecordSnapshot(ctx, candidate.snapshot); err != nil {
+			warnings = append(warnings, fmt.Sprintf("snapshot %s: %v", candidate.entity.ID, err))
 			continue
 		}
 		trends = append(trends, trend)
@@ -168,9 +201,6 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	}
 	charted, err := s.history.ApplyChart(ctx, trends, now)
 	if err != nil {
-		// Chart metadata is part of the public Top 20 contract. Never report a
-		// successful scan or publish unannotated trends when durable chart state
-		// could not be written.
 		return Result{}, fmt.Errorf("persist chart: %w", err)
 	}
 	trends = charted

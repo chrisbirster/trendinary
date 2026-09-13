@@ -1,17 +1,14 @@
 package scanner
 
-// topCandidateProcessingLimit bounds expensive durable scoring work relative to
-// the number of trends we can actually publish. The pre-score candidate weight
-// still considers every discovered cluster; only the strongest shortlist pays
-// for entity resolution, rolling evidence, baselines, propagation, snapshots,
-// and chart history over remote libSQL.
+// topCandidateProcessingLimit bounds remote durable scoring work to the number
+// of trends we can actually publish. The full discovered cluster universe still
+// competes in the cheap pre-score ranking before this shortlist is chosen.
 func topCandidateProcessingLimit(published int) int {
 	if published <= 0 {
 		published = 20
 	}
-	limit := published * 2
-	if limit > maxCandidateClusters {
+	if published > maxCandidateClusters {
 		return maxCandidateClusters
 	}
-	return limit
+	return published
 }

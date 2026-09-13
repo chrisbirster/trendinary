@@ -18,13 +18,14 @@ import (
 )
 
 const (
-	CursorName                = "atproto-jetstream-v2-posts"
-	postsCollection           = "app.bsky.feed.post"
-	defaultHost               = "https://jetstream.us-east.bsky.network"
-	defaultStreamStaleAfter   = time.Minute
-	freshStreamEventMaxAge    = 10 * time.Minute
-	maxStreamWatchdogInterval = 30 * time.Second
-	minStreamWatchdogInterval = 10 * time.Millisecond
+	CursorName                   = "atproto-jetstream-v2-posts"
+	postsCollection              = "app.bsky.feed.post"
+	defaultHost                  = "https://jetstream.us-east.bsky.network"
+	defaultStreamStaleAfter      = time.Minute
+	freshStreamEventMaxAge       = 10 * time.Minute
+	maxStreamWatchdogInterval    = 30 * time.Second
+	minStreamWatchdogInterval    = 10 * time.Millisecond
+	defaultCursorCheckpointEvery = 5 * time.Second
 )
 
 var (
@@ -33,17 +34,19 @@ var (
 )
 
 type Config struct {
-	Host       string
-	BatchSize  int
-	Status     *runtimeinfo.Status
-	APIKey     string
-	StaleAfter time.Duration
+	Host                  string
+	BatchSize             int
+	Status                *runtimeinfo.Status
+	APIKey                string
+	StaleAfter            time.Duration
+	CursorCheckpointEvery time.Duration
 }
 
 type Collector struct {
-	history *history.Store
-	recent  *recent.Store
-	config  Config
+	history              *history.Store
+	recent               *recent.Store
+	config               Config
+	lastCursorCheckpoint time.Time
 }
 
 func New(historical *history.Store, recentSignals *recent.Store, config Config) *Collector {
@@ -55,6 +58,9 @@ func New(historical *history.Store, recentSignals *recent.Store, config Config) 
 	}
 	if config.StaleAfter <= 0 {
 		config.StaleAfter = defaultStreamStaleAfter
+	}
+	if config.CursorCheckpointEvery <= 0 {
+		config.CursorCheckpointEvery = defaultCursorCheckpointEvery
 	}
 	config.APIKey = strings.TrimSpace(config.APIKey)
 	if config.APIKey == "" {
@@ -77,20 +83,12 @@ func (c *Collector) subscriptionOptions(cursor uint64, hasCursor bool) ([]bskyje
 		return opts, "live"
 	}
 	if c.config.APIKey != "" {
-		// Archive replay requires a bearer API key. The jetstream client scopes
-		// this secret to archive XRPC/download requests and never sends it to the
-		// public live WebSocket.
 		opts = append(opts,
 			bskyjetstream.WithAPIKey(c.config.APIKey),
 			bskyjetstream.WithAfterSeq(cursor),
 		)
 		return opts, "archive-replay"
 	}
-	// A persisted cursor must never make the public live stream unavailable.
-	// Without an archive credential, first attempt to resume the public live
-	// tail from the durable cursor. If the cursor has fallen below the server's
-	// bounded lookback floor, Run deliberately drops the gap and attaches at the
-	// current live tip instead of leaving discovery offline.
 	opts = append(opts, bskyjetstream.WithLiveCursor(cursor))
 	return opts, "live-resume"
 }
@@ -128,10 +126,17 @@ func shouldDropResumeGap(mode, apiKey string, snapshot runtimeinfo.StreamSnapsho
 	return now.UTC().Sub(snapshot.LastEventAt) > freshStreamEventMaxAge
 }
 
+func resumeFreshnessExpired(mode, apiKey string, snapshot runtimeinfo.StreamSnapshot, connectedAt, now time.Time, grace time.Duration) bool {
+	if !shouldDropResumeGap(mode, apiKey, snapshot, now) {
+		return false
+	}
+	if grace <= 0 {
+		grace = defaultStreamStaleAfter
+	}
+	return connectedAt.IsZero() || now.UTC().Sub(connectedAt.UTC()) >= grace
+}
+
 func recycleStalledSubscription(cancel context.CancelFunc, client *bskyjetstream.Client) {
-	// Closing the Jetstream client alone is not guaranteed to unblock the
-	// library's Events iterator. Cancelling the per-subscription context is the
-	// authoritative interrupt; Close remains best-effort transport cleanup.
 	if cancel != nil {
 		cancel()
 	}
@@ -140,14 +145,11 @@ func recycleStalledSubscription(cancel context.CancelFunc, client *bskyjetstream
 	}
 }
 
-// watchLiveProgress closes a live client when the socket remains connected but
-// no cursor/event progress is observed for too long. Upstream event timestamps
-// can legitimately be old while a resume is catching up, so cursor advancement
-// is treated as healthy progress even before event time reaches the current tip.
-// When no progress occurs, stalled is signaled before Close so Run can decide
-// whether a public cursor resume must abandon an unreplayable gap and attach at
-// the current live tip.
-func (c *Collector) watchLiveProgress(ctx context.Context, cancel context.CancelFunc, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, stalled chan<- struct{}, done chan<- struct{}) {
+// watchLiveProgress recycles a live subscription when it stops progressing. A
+// credential-free cursor resume also has a freshness deadline: advancing through
+// old history does not count as healthy forever. Authenticated archive replay is
+// exempt so it can catch up the complete durable gap before cutting over live.
+func (c *Collector) watchLiveProgress(ctx context.Context, cancel context.CancelFunc, client *bskyjetstream.Client, mode string, connectedAt time.Time, stop <-chan struct{}, stalled chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
 	if c == nil || client == nil || c.config.Status == nil || c.config.StaleAfter <= 0 {
 		return
@@ -169,6 +171,20 @@ func (c *Collector) watchLiveProgress(ctx context.Context, cancel context.Cancel
 			snapshot := c.config.Status.Snapshot().Stream
 			if !snapshot.Connected {
 				continue
+			}
+			if resumeFreshnessExpired(mode, c.config.APIKey, snapshot, connectedAt, now, c.config.StaleAfter) {
+				slog.Warn("jetstream public resume is advancing stale history; abandoning gap and attaching at current live tip",
+					"host", c.config.Host,
+					"last_event_at", snapshot.LastEventAt,
+					"last_cursor", snapshot.LastCursor,
+					"connected_at", connectedAt,
+				)
+				select {
+				case stalled <- struct{}{}:
+				default:
+				}
+				recycleStalledSubscription(cancel, client)
+				return
 			}
 			if streamProgressed(snapshot, lastCursor, lastEventAt) {
 				lastCursor = snapshot.LastCursor
@@ -198,11 +214,8 @@ func (c *Collector) watchLiveProgress(ctx context.Context, cancel context.Cancel
 }
 
 // Run consumes app.bsky.feed.post commits until the context is cancelled or
-// Jetstream reports a terminal failure. When a durable cursor exists and an
-// archive API key is configured, the v2 client replays from that sequence and
-// then cuts over to live. Without a key it first attempts a public live resume;
-// if that cursor has fallen outside usable live history or silently stalls, Run
-// deliberately drops the unreplayable gap and attaches at the current live tip.
+// Jetstream reports a terminal failure. A configured API key uses authenticated
+// archive replay from the durable cursor before cutting over to the live stream.
 func (c *Collector) Run(ctx context.Context) error {
 	if c.history == nil || c.recent == nil {
 		return fmt.Errorf("jetstream collector dependencies are incomplete")
@@ -238,7 +251,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		watchdogStop := make(chan struct{})
 		watchdogStalled := make(chan struct{}, 1)
 		watchdogDone := make(chan struct{})
-		go c.watchLiveProgress(streamCtx, streamCancel, client, connectedAt, watchdogStop, watchdogStalled, watchdogDone)
+		go c.watchLiveProgress(streamCtx, streamCancel, client, mode, connectedAt, watchdogStop, watchdogStalled, watchdogDone)
 
 		restartAtLiveTip := false
 		for batch, streamErr := range client.Events(streamCtx) {
@@ -276,6 +289,16 @@ func (c *Collector) Run(ctx context.Context) error {
 			cursor = batch.LastCursor()
 			hasCursor = cursor > 0
 		}
+
+		if cursor > 0 && ctx.Err() == nil {
+			if err := c.checkpointCursor(ctx, cursor, true); err != nil {
+				close(watchdogStop)
+				<-watchdogDone
+				streamCancel()
+				_ = client.Close()
+				return err
+			}
+		}
 		close(watchdogStop)
 		<-watchdogDone
 		streamCancel()
@@ -289,10 +312,6 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 
 		if restartAtLiveTip {
-			// No archive credential means the missing interval cannot be recovered.
-			// Omit the stale cursor on the next subscription so Jetstream starts at
-			// the current tip. The first delivered batch advances the durable cursor
-			// normally, so subsequent restarts can resume from fresh state.
 			cursor = 0
 			hasCursor = false
 			opts, mode = c.subscriptionOptions(0, false)
@@ -320,12 +339,10 @@ func (c *Collector) Run(ctx context.Context) error {
 	}
 }
 
-// applyBatch folds one Jetstream batch into durable application state before
-// advancing the cursor. All operations are idempotent, so replay after a crash
-// is safe if the process dies before SaveCursor succeeds.
+// applyBatch folds Jetstream mutations into the bounded in-memory attention
+// window. Raw posts are intentionally not durable; only scanner-selected trend
+// evidence is written to Turso. The cursor is checkpointed every few seconds.
 func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event, cursor uint64) error {
-	// A batch can contain multiple mutations for the same record. Fold in wire
-	// order so the last mutation wins before grouped durable writes are issued.
 	upserts := make(map[string]observedSignal)
 	deletes := make(map[string]struct{})
 
@@ -351,8 +368,6 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 
 		signal, ok := normalizePost(event)
 		if !ok {
-			// An update can make a previously useful text post unclusterable.
-			// Removing it keeps the live window consistent with upstream state.
 			if event.Commit.Operation == bskyjetstream.OpUpdate {
 				delete(upserts, id)
 				deletes[id] = struct{}{}
@@ -368,12 +383,9 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 		upsertIDs = append(upsertIDs, id)
 	}
 	sort.Strings(upsertIDs)
-	values := make([]model.Signal, 0, len(upsertIDs))
 	for _, id := range upsertIDs {
-		values = append(values, upserts[id].signal)
-	}
-	if err := c.history.RecordSignalsBatch(ctx, values); err != nil {
-		return fmt.Errorf("persist jetstream signals: %w", err)
+		item := upserts[id]
+		c.recent.Upsert(item.signal, item.observedAt)
 	}
 
 	deleteIDs := make([]string, 0, len(deletes))
@@ -381,24 +393,31 @@ func (c *Collector) applyBatch(ctx context.Context, events []bskyjetstream.Event
 		deleteIDs = append(deleteIDs, id)
 	}
 	sort.Strings(deleteIDs)
-	if err := c.history.DeleteSignals(ctx, deleteIDs); err != nil {
-		return fmt.Errorf("persist jetstream deletes: %w", err)
-	}
-
-	for _, id := range upsertIDs {
-		item := upserts[id]
-		c.recent.Upsert(item.signal, item.observedAt)
-	}
 	for _, id := range deleteIDs {
 		c.recent.Delete(id)
 	}
 
-	if cursor > 0 {
-		if err := c.history.SaveCursor(ctx, CursorName, cursor); err != nil {
-			return fmt.Errorf("save jetstream cursor: %w", err)
-		}
+	if err := c.checkpointCursor(ctx, cursor, false); err != nil {
+		return err
 	}
-	c.config.Status.StreamBatch(cursor, len(events), latestObserved)
+	if c.config.Status != nil {
+		c.config.Status.StreamBatch(cursor, len(events), latestObserved)
+	}
+	return nil
+}
+
+func (c *Collector) checkpointCursor(ctx context.Context, cursor uint64, force bool) error {
+	if cursor == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	if !force && !c.lastCursorCheckpoint.IsZero() && now.Sub(c.lastCursorCheckpoint) < c.config.CursorCheckpointEvery {
+		return nil
+	}
+	if err := c.history.SaveCursor(ctx, CursorName, cursor); err != nil {
+		return fmt.Errorf("save jetstream cursor: %w", err)
+	}
+	c.lastCursorCheckpoint = now
 	return nil
 }
 

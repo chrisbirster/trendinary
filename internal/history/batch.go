@@ -10,14 +10,14 @@ import (
 )
 
 const (
-	signalWriteBatchSize     = 32
-	membershipWriteBatchSize = 100
+	signalWriteBatchSize       = 32
+	membershipWriteBatchSize   = 100
+	membershipRefreshInterval  = time.Hour
 )
 
-// RecordSignalsBatch is the remote-libSQL-friendly scanner/stream write path.
-// It preserves RecordSignals semantics while collapsing dozens of network
-// round trips into bounded multi-row UPSERT statements. The conservative batch
-// size stays below SQLite's common bind-variable limits.
+// RecordSignalsBatch is the remote-libSQL-friendly scanner write path. It
+// persists only selected trend evidence and turns unchanged UPSERTs into true
+// no-ops so periodic scans do not rewrite identical rows.
 func (s *Store) RecordSignalsBatch(ctx context.Context, values []model.Signal) error {
 	if len(values) == 0 {
 		return nil
@@ -80,7 +80,20 @@ ON CONFLICT(id) DO UPDATE SET
   replies=excluded.replies,
   likes=excluded.likes,
   reposts=excluded.reposts,
-  quotes=excluded.quotes`)
+  quotes=excluded.quotes
+WHERE signals.source_name IS NOT excluded.source_name
+   OR signals.source_domain IS NOT excluded.source_domain
+   OR signals.discovery_channel IS NOT excluded.discovery_channel
+   OR signals.title IS NOT excluded.title
+   OR signals.body IS NOT excluded.body
+   OR signals.url IS NOT excluded.url
+   OR signals.author IS NOT excluded.author
+   OR signals.published_at IS NOT excluded.published_at
+   OR signals.score IS NOT excluded.score
+   OR signals.replies IS NOT excluded.replies
+   OR signals.likes IS NOT excluded.likes
+   OR signals.reposts IS NOT excluded.reposts
+   OR signals.quotes IS NOT excluded.quotes`)
 		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 			return fmt.Errorf("record signal batch %d-%d: %w", start, end, err)
 		}
@@ -88,9 +101,8 @@ ON CONFLICT(id) DO UPDATE SET
 	return tx.Commit()
 }
 
-// RecordTrendSignalsBatch is the equivalent batched path for scanner trend
-// membership persistence. first_observed_at remains immutable on conflict while
-// observed_at advances, matching RecordTrendSignals.
+// RecordTrendSignalsBatch persists selected trend memberships. Repeated scans
+// refresh a membership at most hourly; first_observed_at remains immutable.
 func (s *Store) RecordTrendSignalsBatch(ctx context.Context, trendKey string, values []model.Signal, observedAt time.Time) error {
 	if trendKey == "" || len(values) == 0 {
 		return nil
@@ -102,6 +114,7 @@ func (s *Store) RecordTrendSignalsBatch(ctx context.Context, trendKey string, va
 		observedAt = time.Now().UTC()
 	}
 	stamp := observedAt.UTC().Format(time.RFC3339Nano)
+	refreshBefore := observedAt.Add(-membershipRefreshInterval).UTC().Format(time.RFC3339Nano)
 
 	ids := make([]string, 0, len(values))
 	for _, signal := range values {
@@ -128,7 +141,7 @@ func (s *Store) RecordTrendSignalsBatch(ctx context.Context, trendKey string, va
 
 		var query strings.Builder
 		query.WriteString("INSERT INTO trend_signal_memberships (trend_key, signal_id, first_observed_at, observed_at) VALUES ")
-		args := make([]any, 0, len(chunk)*4)
+		args := make([]any, 0, len(chunk)*4+1)
 		for i, signalID := range chunk {
 			if i > 0 {
 				query.WriteByte(',')
@@ -136,7 +149,8 @@ func (s *Store) RecordTrendSignalsBatch(ctx context.Context, trendKey string, va
 			query.WriteString("(?, ?, ?, ?)")
 			args = append(args, trendKey, signalID, stamp, stamp)
 		}
-		query.WriteString(" ON CONFLICT(trend_key, signal_id) DO UPDATE SET observed_at=excluded.observed_at")
+		query.WriteString(" ON CONFLICT(trend_key, signal_id) DO UPDATE SET observed_at=excluded.observed_at WHERE trend_signal_memberships.observed_at <= ?")
+		args = append(args, refreshBefore)
 		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
 			return fmt.Errorf("record trend membership batch %s %d-%d: %w", trendKey, start, end, err)
 		}

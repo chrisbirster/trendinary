@@ -83,7 +83,7 @@ func TestStreamProgressedAcceptsCursorMovementWithOldEventTime(t *testing.T) {
 	}
 }
 
-func TestApplyBatchFoldsCreateUpdateDeleteAndCursor(t *testing.T) {
+func TestApplyBatchKeepsRawJetstreamInMemoryAndCheckpointsCursor(t *testing.T) {
 	historical, err := history.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestApplyBatchFoldsCreateUpdateDeleteAndCursor(t *testing.T) {
 	defer historical.Close()
 
 	window := recent.New(100, time.Hour)
-	collector := New(historical, window, Config{})
+	collector := New(historical, window, Config{CursorCheckpointEvery: time.Nanosecond})
 	ctx := context.Background()
 
 	created := testPostEvent(10, bskyjetstream.OpCreate, "A new protocol is suddenly everywhere")
@@ -108,6 +108,13 @@ func TestApplyBatchFoldsCreateUpdateDeleteAndCursor(t *testing.T) {
 	values := window.Recent(time.Time{})
 	if len(values) != 1 || values[0].Author != "did:plc:alice" || values[0].Source.Domain != "bsky.app" {
 		t.Fatalf("unexpected normalized signal: %+v", values)
+	}
+	var durableSignals int
+	if err := historical.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM signals`).Scan(&durableSignals); err != nil {
+		t.Fatal(err)
+	}
+	if durableSignals != 0 {
+		t.Fatalf("raw Jetstream signals persisted = %d, want 0", durableSignals)
 	}
 
 	updated := testPostEvent(11, bskyjetstream.OpUpdate, "The protocol is accelerating faster now")
