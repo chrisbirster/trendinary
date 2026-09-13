@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	CursorName                 = "atproto-jetstream-v2-posts"
-	postsCollection            = "app.bsky.feed.post"
-	defaultHost                = "https://jetstream.us-east.bsky.network"
-	defaultStreamStaleAfter    = 3 * time.Minute
-	maxStreamWatchdogInterval  = 30 * time.Second
-	minStreamWatchdogInterval  = 10 * time.Millisecond
+	CursorName                = "atproto-jetstream-v2-posts"
+	postsCollection           = "app.bsky.feed.post"
+	defaultHost               = "https://jetstream.us-east.bsky.network"
+	defaultStreamStaleAfter   = 3 * time.Minute
+	maxStreamWatchdogInterval = 30 * time.Second
+	minStreamWatchdogInterval = 10 * time.Millisecond
 )
 
 var (
@@ -113,15 +113,27 @@ func watchdogInterval(staleAfter time.Duration) time.Duration {
 	return interval
 }
 
+func streamProgressed(snapshot runtimeinfo.StreamSnapshot, lastCursor uint64, lastEventAt time.Time) bool {
+	return snapshot.LastCursor != lastCursor || snapshot.LastEventAt.After(lastEventAt)
+}
+
 // watchLiveProgress closes a live client when the socket remains connected but
-// no real event advances for too long. Close is explicitly safe concurrently
-// with Events and makes the iterator return, allowing the outer reconnect loop
-// to establish a fresh subscription from the durable cursor.
+// no cursor/event progress is observed for too long. Upstream event timestamps
+// can legitimately be old while a resume is catching up, so cursor advancement
+// is treated as healthy progress even before event time reaches the current tip.
+// Close is explicitly safe concurrently with Events and makes the iterator
+// return, allowing the outer reconnect loop to establish a fresh subscription
+// from the durable cursor.
 func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 	if c == nil || client == nil || c.config.Status == nil || c.config.StaleAfter <= 0 {
 		return
 	}
+	initial := c.config.Status.Snapshot().Stream
+	lastCursor := initial.LastCursor
+	lastEventAt := initial.LastEventAt
+	lastProgressAt := connectedAt
+
 	ticker := time.NewTicker(watchdogInterval(c.config.StaleAfter))
 	defer ticker.Stop()
 	for {
@@ -130,23 +142,26 @@ func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream
 			return
 		case <-stop:
 			return
-		case <-ticker.C:
+		case now := <-ticker.C:
 			snapshot := c.config.Status.Snapshot().Stream
 			if !snapshot.Connected {
 				continue
 			}
-			lastProgress := snapshot.LastEventAt
-			// LastEventAt can belong to the previous connection. Give every fresh
-			// socket a complete stale window to deliver its first real event.
-			if lastProgress.IsZero() || lastProgress.Before(connectedAt) {
-				lastProgress = connectedAt
+			if streamProgressed(snapshot, lastCursor, lastEventAt) {
+				lastCursor = snapshot.LastCursor
+				if snapshot.LastEventAt.After(lastEventAt) {
+					lastEventAt = snapshot.LastEventAt
+				}
+				lastProgressAt = now.UTC()
+				continue
 			}
-			if time.Since(lastProgress) < c.config.StaleAfter {
+			if now.UTC().Sub(lastProgressAt) < c.config.StaleAfter {
 				continue
 			}
 			slog.Warn("jetstream stream stalled; recycling live subscription",
 				"host", c.config.Host,
 				"last_event_at", snapshot.LastEventAt,
+				"last_cursor", snapshot.LastCursor,
 				"stale_after", c.config.StaleAfter,
 			)
 			_ = client.Close()
