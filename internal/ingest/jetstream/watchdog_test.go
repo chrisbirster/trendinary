@@ -37,6 +37,18 @@ func TestShouldDropResumeGapOnlyForStalePublicResume(t *testing.T) {
 	}
 }
 
+func TestPublicResumeFreshnessExpiresEvenWhileCursorAdvances(t *testing.T) {
+	now := time.Date(2026, 9, 13, 6, 0, 0, 0, time.UTC)
+	connectedAt := now.Add(-time.Minute)
+	snapshot := runtimeinfo.StreamSnapshot{LastCursor: 9999, LastEventAt: now.Add(-4 * time.Hour)}
+	if !resumeFreshnessExpired("live-resume", "", snapshot, connectedAt, now, time.Minute) {
+		t.Fatal("stale public resume must expire after grace even when its cursor advances")
+	}
+	if resumeFreshnessExpired("archive-replay", "archive-secret", snapshot, connectedAt, now, time.Minute) {
+		t.Fatal("authenticated archive replay must be allowed to catch up historical events")
+	}
+}
+
 func TestRecycleStalledSubscriptionCancelsEventIteratorContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	recycleStalledSubscription(cancel, nil)
