@@ -40,6 +40,20 @@ func TestRecordSignalsBatchUpsertsAndMemberships(t *testing.T) {
 		t.Fatalf("signal count = %d, want %d", count, len(values))
 	}
 
+	var changesBefore, changesAfter int
+	if err := store.db.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSignalsBatch(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if changesAfter != changesBefore {
+		t.Fatalf("unchanged signal upsert wrote %d rows, want 0", changesAfter-changesBefore)
+	}
+
 	values[0].Engagement.Score = 999
 	if err := store.RecordSignalsBatch(ctx, values[:1]); err != nil {
 		t.Fatal(err)
@@ -60,5 +74,22 @@ func TestRecordSignalsBatchUpsertsAndMemberships(t *testing.T) {
 	}
 	if count != len(values) {
 		t.Fatalf("membership count = %d, want %d", count, len(values))
+	}
+
+	observed := time.Now().UTC()
+	if err := store.RecordTrendSignalsBatch(ctx, "trend-2", values[:1], observed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordTrendSignalsBatch(ctx, "trend-2", values[:1], observed.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if changesAfter != changesBefore {
+		t.Fatalf("membership refreshed inside cooldown wrote %d rows, want 0", changesAfter-changesBefore)
 	}
 }
