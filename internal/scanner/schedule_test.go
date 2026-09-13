@@ -88,3 +88,19 @@ func TestScheduledSourceStaggersInitialPoll(t *testing.T) {
 		t.Fatalf("initial next run not staggered: %+v", status)
 	}
 }
+
+func TestScheduledSourceBootstrapsCoreTrendFeeds(t *testing.T) {
+	for _, id := range []string{"google-trends-us", "wired-top", "ars-all", "abc-top", "techcrunch"} {
+		fake := &scheduledFake{}
+		source := NewScheduledSource(fake, SourceMetadata{ID: id, Name: id, Kind: "rss", Cadence: time.Hour})
+		if status := source.SourceStatus(); !status.NextRunAt.IsZero() {
+			t.Fatalf("%s next run = %s, want immediate bootstrap", id, status.NextRunAt)
+		}
+		if _, err := source.Discover(context.Background()); err != nil {
+			t.Fatalf("%s discover: %v", id, err)
+		}
+		if fake.calls != 1 {
+			t.Fatalf("%s calls = %d, want 1", id, fake.calls)
+		}
+	}
+}
