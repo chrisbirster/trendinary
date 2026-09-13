@@ -128,6 +128,18 @@ func shouldDropResumeGap(mode, apiKey string, snapshot runtimeinfo.StreamSnapsho
 	return now.UTC().Sub(snapshot.LastEventAt) > freshStreamEventMaxAge
 }
 
+func recycleStalledSubscription(cancel context.CancelFunc, client *bskyjetstream.Client) {
+	// Closing the Jetstream client alone is not guaranteed to unblock the
+	// library's Events iterator. Cancelling the per-subscription context is the
+	// authoritative interrupt; Close remains best-effort transport cleanup.
+	if cancel != nil {
+		cancel()
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+}
+
 // watchLiveProgress closes a live client when the socket remains connected but
 // no cursor/event progress is observed for too long. Upstream event timestamps
 // can legitimately be old while a resume is catching up, so cursor advancement
@@ -135,7 +147,7 @@ func shouldDropResumeGap(mode, apiKey string, snapshot runtimeinfo.StreamSnapsho
 // When no progress occurs, stalled is signaled before Close so Run can decide
 // whether a public cursor resume must abandon an unreplayable gap and attach at
 // the current live tip.
-func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, stalled chan<- struct{}, done chan<- struct{}) {
+func (c *Collector) watchLiveProgress(ctx context.Context, cancel context.CancelFunc, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, stalled chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
 	if c == nil || client == nil || c.config.Status == nil || c.config.StaleAfter <= 0 {
 		return
@@ -179,7 +191,7 @@ func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream
 			case stalled <- struct{}{}:
 			default:
 			}
-			_ = client.Close()
+			recycleStalledSubscription(cancel, client)
 			return
 		}
 	}
@@ -217,6 +229,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("subscribe jetstream: %w", err)
 		}
+		streamCtx, streamCancel := context.WithCancel(ctx)
 		connectedAt := time.Now().UTC()
 		c.config.Status.StreamConnected(c.config.Host)
 		if hasCursor {
@@ -225,10 +238,10 @@ func (c *Collector) Run(ctx context.Context) error {
 		watchdogStop := make(chan struct{})
 		watchdogStalled := make(chan struct{}, 1)
 		watchdogDone := make(chan struct{})
-		go c.watchLiveProgress(ctx, client, connectedAt, watchdogStop, watchdogStalled, watchdogDone)
+		go c.watchLiveProgress(streamCtx, streamCancel, client, connectedAt, watchdogStop, watchdogStalled, watchdogDone)
 
 		restartAtLiveTip := false
-		for batch, streamErr := range client.Events(ctx) {
+		for batch, streamErr := range client.Events(streamCtx) {
 			if streamErr != nil {
 				if errors.Is(streamErr, bskyjetstream.ErrFatal) {
 					if mode == "live-resume" && liveCursorTooOld(streamErr) {
@@ -242,6 +255,7 @@ func (c *Collector) Run(ctx context.Context) error {
 					}
 					close(watchdogStop)
 					<-watchdogDone
+					streamCancel()
 					_ = client.Close()
 					return fmt.Errorf("%w: %v", ErrFatal, streamErr)
 				}
@@ -255,6 +269,7 @@ func (c *Collector) Run(ctx context.Context) error {
 			if err := c.applyBatch(ctx, batch.Events(), batch.LastCursor()); err != nil {
 				close(watchdogStop)
 				<-watchdogDone
+				streamCancel()
 				_ = client.Close()
 				return err
 			}
@@ -263,6 +278,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 		close(watchdogStop)
 		<-watchdogDone
+		streamCancel()
 		_ = client.Close()
 
 		stalled := false
