@@ -4,6 +4,25 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 
 ## [Unreleased]
 
+
+## [0.6.2] - 2026-09-12
+
+### Added
+
+- Source-health snapshots are now exposed by `/api/v1/health/streams`, including polling success, failure, cache, and contribution telemetry needed for production source audits.
+- `TRENDINARY_SCAN_TIMEOUT` allows the production scanner budget to be tuned explicitly; the default is 90 seconds within the two-minute scan cadence.
+
+### Changed
+
+- Top 20 chart history reads and writes are batched into a small fixed number of database round trips instead of issuing per-trend and per-scan queries against remote libSQL.
+- The Bluesky Jetstream idle watchdog now recycles a no-progress public resume after one minute while preserving authenticated archive-replay cursor semantics.
+
+### Fixed
+
+- Scanner runs no longer exhaust the shared deadline before chart finalization and fail with `persist chart: latest chart scan: context deadline exceeded` under production libSQL latency.
+- Credential-free Jetstream recovery no longer reconnects indefinitely to the same stale durable cursor; when a public resume is stale and makes no progress, Trendinary deliberately attaches at the current live tip.
+- Added regression coverage for repeated 20-entry chart history, stale public Jetstream resume recovery, and public source-health serialization.
+
 ## [0.6.1] - 2026-09-12
 
 ### Changed
