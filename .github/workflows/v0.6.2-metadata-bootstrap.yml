@@ -1,0 +1,70 @@
+name: v0.6.2 metadata bootstrap
+
+on:
+  push:
+    branches: [release/v0.6.2]
+    paths:
+      - .github/workflows/v0.6.2-metadata-bootstrap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: release/v0.6.2
+          fetch-depth: 0
+      - name: Update v0.6.2 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '0.6.2\n' > VERSION
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for name in ("package.json", "package-lock.json"):
+              path = Path(name)
+              data = json.loads(path.read_text())
+              data["version"] = "0.6.2"
+              if name == "package-lock.json":
+                  data["packages"][""]["version"] = "0.6.2"
+              path.write_text(json.dumps(data, indent=2) + "\n")
+
+          path = Path("CHANGELOG.md")
+          text = path.read_text()
+          marker = "## [Unreleased]\n"
+          section = """
+
+          ## [0.6.2] - 2026-09-12
+
+          ### Added
+
+          - Source-health snapshots are now exposed by `/api/v1/health/streams`, including polling success, failure, cache, and contribution telemetry needed for production source audits.
+          - `TRENDINARY_SCAN_TIMEOUT` allows the production scanner budget to be tuned explicitly; the default is 90 seconds within the two-minute scan cadence.
+
+          ### Changed
+
+          - Top 20 chart history reads and writes are batched into a small fixed number of database round trips instead of issuing per-trend and per-scan queries against remote libSQL.
+          - The Bluesky Jetstream idle watchdog now recycles a no-progress public resume after one minute while preserving authenticated archive-replay cursor semantics.
+
+          ### Fixed
+
+          - Scanner runs no longer exhaust the shared deadline before chart finalization and fail with `persist chart: latest chart scan: context deadline exceeded` under production libSQL latency.
+          - Credential-free Jetstream recovery no longer reconnects indefinitely to the same stale durable cursor; when a public resume is stale and makes no progress, Trendinary deliberately attaches at the current live tip.
+          - Added regression coverage for repeated 20-entry chart history, stale public Jetstream resume recovery, and public source-health serialization.
+          """
+          if "## [0.6.2]" not in text:
+              text = text.replace(marker, marker + section, 1)
+          path.write_text(text)
+          PY
+          rm .github/workflows/v0.6.2-metadata-bootstrap.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add VERSION package.json package-lock.json CHANGELOG.md .github/workflows/v0.6.2-metadata-bootstrap.yml
+          git commit -m 'Release v0.6.2'
+          git push origin HEAD:release/v0.6.2
