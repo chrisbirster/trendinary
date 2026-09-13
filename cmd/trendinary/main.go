@@ -310,9 +310,10 @@ func runJetstream(ctx context.Context, collector *jetstreaming.Collector, status
 }
 
 func runScanner(ctx context.Context, scan *scanner.Scanner, streamWindow *recent.Store, sources []scanner.DiscoverySource, inactive []runtimeinfo.SourceSnapshot, interval time.Duration, status *runtimeinfo.Status, jetstreamEnabled, scannerEnabled bool) {
+	scanTimeout := envDuration("TRENDINARY_SCAN_TIMEOUT", 90*time.Second)
 	run := func() {
 		status.ScanStarted(time.Now().UTC())
-		runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		runCtx, cancel := context.WithTimeout(ctx, scanTimeout)
 		defer cancel()
 		result, err := scan.RunWithSourcesV2(runCtx, streamWindow, sources)
 		status.SetSources(runtimeSourceSnapshots(sources, inactive, interval, jetstreamEnabled, scannerEnabled))
