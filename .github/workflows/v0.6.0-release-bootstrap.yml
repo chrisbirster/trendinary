@@ -1,0 +1,112 @@
+name: v0.6.0 release bootstrap
+
+on:
+  push:
+    branches:
+      - "ops/v0.6.0-release"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.actor == 'chrisbirster'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TARGET_SHA: d27aaa0e7a839fe5762f2bd4d4384d7171aa9598
+      RELEASE_TAG: v0.6.0
+      VERSION_VALUE: 0.6.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: d27aaa0e7a839fe5762f2bd4d4384d7171aa9598
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27.0"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08
+      - name: Verify exact released dev head
+        run: |
+          set -euo pipefail
+          git fetch origin dev --tags --force
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse origin/dev)" = "$TARGET_SHA"
+          test "$(tr -d '[:space:]' < VERSION)" = "$VERSION_VALUE"
+          test "$(node -p "require('./package.json').version")" = "$VERSION_VALUE"
+          grep -Eq "^## \\[$VERSION_VALUE\\]( |$)" CHANGELOG.md
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$TARGET_SHA"
+          fi
+      - run: npm ci
+      - name: Verify supply-chain policy
+        run: bash scripts/verify-supply-chain.sh
+      - name: Verify dependency vulnerabilities
+        run: npm run security
+      - name: Validate Goose migrations
+        run: go run github.com/pressly/goose/v3/cmd/goose@v3.27.3 -dir migrations validate
+      - name: Verify Turso Fly runtime secrets
+        shell: bash
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          secret_table="$(flyctl secrets list --app trendinary)"
+          for required in TURSO_DATABASE_URL TURSO_AUTH_TOKEN; do
+            if ! printf '%s\n' "$secret_table" | grep -Fq "$required"; then
+              echo "::error::Missing Fly secret ${required}. Configure Turso before releasing."
+              exit 1
+            fi
+          done
+      - name: Plan production migrations inside Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: bash scripts/run-goose-fly-machine.sh plan
+      - name: Verify Go module lock files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Verify local release gate
+        run: npm run verify:local
+      - name: Verify real libSQL and two-process Docker topology
+        run: npm run test:libsql
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Verify production Docker image in browser
+        run: npm run test:e2e:docker
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          awk -v version="$VERSION_VALUE" '
+            $0 ~ "^## \\[" version "\\]" {found=1; next}
+            found && $0 ~ /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - name: Publish tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$TARGET_SHA"
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$RELEASE_TAG" "$TARGET_SHA" -m "$RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG GitHub Release already exists"
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes-file release-notes.md --verify-tag
+          fi
+      - name: Record deployment hold
+        run: |
+          echo "Release $RELEASE_TAG published from $TARGET_SHA." >> "$GITHUB_STEP_SUMMARY"
+          echo "No production migrations were applied and no deployment was started by this workflow." >> "$GITHUB_STEP_SUMMARY"
