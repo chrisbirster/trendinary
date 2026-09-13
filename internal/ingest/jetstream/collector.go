@@ -21,7 +21,8 @@ const (
 	CursorName                = "atproto-jetstream-v2-posts"
 	postsCollection           = "app.bsky.feed.post"
 	defaultHost               = "https://jetstream.us-east.bsky.network"
-	defaultStreamStaleAfter   = 3 * time.Minute
+	defaultStreamStaleAfter   = time.Minute
+	freshStreamEventMaxAge    = 10 * time.Minute
 	maxStreamWatchdogInterval = 30 * time.Second
 	minStreamWatchdogInterval = 10 * time.Millisecond
 )
@@ -117,14 +118,24 @@ func streamProgressed(snapshot runtimeinfo.StreamSnapshot, lastCursor uint64, la
 	return snapshot.LastCursor != lastCursor || snapshot.LastEventAt.After(lastEventAt)
 }
 
+func shouldDropResumeGap(mode, apiKey string, snapshot runtimeinfo.StreamSnapshot, now time.Time) bool {
+	if mode != "live-resume" || strings.TrimSpace(apiKey) != "" {
+		return false
+	}
+	if snapshot.LastEventAt.IsZero() {
+		return true
+	}
+	return now.UTC().Sub(snapshot.LastEventAt) > freshStreamEventMaxAge
+}
+
 // watchLiveProgress closes a live client when the socket remains connected but
 // no cursor/event progress is observed for too long. Upstream event timestamps
 // can legitimately be old while a resume is catching up, so cursor advancement
 // is treated as healthy progress even before event time reaches the current tip.
-// Close is explicitly safe concurrently with Events and makes the iterator
-// return, allowing the outer reconnect loop to establish a fresh subscription
-// from the durable cursor.
-func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, done chan<- struct{}) {
+// When no progress occurs, stalled is signaled before Close so Run can decide
+// whether a public cursor resume must abandon an unreplayable gap and attach at
+// the current live tip.
+func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream.Client, connectedAt time.Time, stop <-chan struct{}, stalled chan<- struct{}, done chan<- struct{}) {
 	defer close(done)
 	if c == nil || client == nil || c.config.Status == nil || c.config.StaleAfter <= 0 {
 		return
@@ -164,6 +175,10 @@ func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream
 				"last_cursor", snapshot.LastCursor,
 				"stale_after", c.config.StaleAfter,
 			)
+			select {
+			case stalled <- struct{}{}:
+			default:
+			}
 			_ = client.Close()
 			return
 		}
@@ -174,9 +189,8 @@ func (c *Collector) watchLiveProgress(ctx context.Context, client *bskyjetstream
 // Jetstream reports a terminal failure. When a durable cursor exists and an
 // archive API key is configured, the v2 client replays from that sequence and
 // then cuts over to live. Without a key it first attempts a public live resume;
-// if that cursor is outside the server's lookback window, it deliberately
-// attaches at the current live tip so missing archive credentials cannot keep
-// continuous discovery offline.
+// if that cursor has fallen outside usable live history or silently stalls, Run
+// deliberately drops the unreplayable gap and attaches at the current live tip.
 func (c *Collector) Run(ctx context.Context) error {
 	if c.history == nil || c.recent == nil {
 		return fmt.Errorf("jetstream collector dependencies are incomplete")
@@ -209,8 +223,9 @@ func (c *Collector) Run(ctx context.Context) error {
 			c.config.Status.StreamBatch(cursor, 0, time.Time{})
 		}
 		watchdogStop := make(chan struct{})
+		watchdogStalled := make(chan struct{}, 1)
 		watchdogDone := make(chan struct{})
-		go c.watchLiveProgress(ctx, client, connectedAt, watchdogStop, watchdogDone)
+		go c.watchLiveProgress(ctx, client, connectedAt, watchdogStop, watchdogStalled, watchdogDone)
 
 		restartAtLiveTip := false
 		for batch, streamErr := range client.Events(ctx) {
@@ -243,10 +258,19 @@ func (c *Collector) Run(ctx context.Context) error {
 				_ = client.Close()
 				return err
 			}
+			cursor = batch.LastCursor()
+			hasCursor = cursor > 0
 		}
 		close(watchdogStop)
 		<-watchdogDone
 		_ = client.Close()
+
+		stalled := false
+		select {
+		case <-watchdogStalled:
+			stalled = true
+		default:
+		}
 
 		if restartAtLiveTip {
 			// No archive credential means the missing interval cannot be recovered.
@@ -260,6 +284,21 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if stalled {
+			snapshot := c.config.Status.Snapshot().Stream
+			c.config.Status.StreamDisconnected(ErrStreamEnded, 0)
+			if shouldDropResumeGap(mode, c.config.APIKey, snapshot, time.Now().UTC()) {
+				slog.Warn("jetstream public cursor resume stalled on stale history; attaching at current live tip",
+					"cursor", cursor,
+					"last_event_at", snapshot.LastEventAt,
+					"configure_archive_replay", "TRENDINARY_JETSTREAM_API_KEY",
+				)
+				cursor = 0
+				hasCursor = false
+			}
+			opts, mode = c.subscriptionOptions(cursor, hasCursor)
+			continue
 		}
 		return ErrStreamEnded
 	}

@@ -2,6 +2,7 @@ package history_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,5 +52,43 @@ func TestApplyChartTracksMovementAndReentry(t *testing.T) {
 	}
 	if third[1].Chart.ConsecutiveScans != 3 || third[1].Chart.NumberOneScans != 2 {
 		t.Fatalf("unexpected consecutive stats: %+v", third[1].Chart)
+	}
+}
+
+func TestApplyChartBatchesFullTop20History(t *testing.T) {
+	store, err := history.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	base := time.Date(2026, 9, 12, 20, 0, 0, 0, time.UTC)
+
+	chart := make([]model.Trend, 20)
+	for i := range chart {
+		chart[i] = model.Trend{
+			ID:             fmt.Sprintf("trend-%02d", i+1),
+			Slug:           fmt.Sprintf("trend-%02d", i+1),
+			Rank:           i + 1,
+			Score:          100 - i,
+			ConfidenceTier: "EMERGING",
+		}
+	}
+	for scan := 0; scan < 25; scan++ {
+		values, err := store.ApplyChart(ctx, chart, base.Add(time.Duration(scan)*2*time.Minute))
+		if err != nil {
+			t.Fatalf("scan %d: %v", scan, err)
+		}
+		if len(values) != 20 {
+			t.Fatalf("scan %d returned %d trends, want 20", scan, len(values))
+		}
+		chart = values
+	}
+
+	if chart[0].Chart.Movement != "—" {
+		t.Fatalf("movement = %q, want stable movement", chart[0].Chart.Movement)
+	}
+	if chart[0].Chart.TotalScans != 25 || chart[0].Chart.ConsecutiveScans != 25 || chart[0].Chart.NumberOneScans != 25 {
+		t.Fatalf("unexpected full-history stats: %+v", chart[0].Chart)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chrisbirster/trendinary/internal/model"
@@ -42,8 +43,9 @@ func (s *Store) ensureChartSchema(ctx context.Context) error {
 }
 
 // ApplyChart annotates a newly ranked chart with movement/history metadata and
-// persists that scan atomically. The chart table intentionally stores only
-// ranking facts; full trend/evidence state remains in the existing stores.
+// persists that scan atomically. Remote libSQL makes one-query-per-trend chart
+// history prohibitively expensive, so the history reads and scan write are
+// grouped into a small fixed number of round trips regardless of chart size.
 func (s *Store) ApplyChart(ctx context.Context, trends []model.Trend, scanAt time.Time) ([]model.Trend, error) {
 	if len(trends) == 0 {
 		return trends, nil
@@ -52,10 +54,6 @@ func (s *Store) ApplyChart(ctx context.Context, trends []model.Trend, scanAt tim
 		return nil, err
 	}
 	scanAt = scanAt.UTC()
-	previousScan, err := s.latestChartScanBefore(ctx, scanAt)
-	if err != nil {
-		return nil, err
-	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -63,17 +61,40 @@ func (s *Store) ApplyChart(ctx context.Context, trends []model.Trend, scanAt tim
 	}
 	defer tx.Rollback()
 
-	out := append([]model.Trend(nil), trends...)
-	for index := range out {
-		trend := &out[index]
-		trendID := trend.ID
-		if trendID == "" {
-			trendID = trend.Slug
-		}
-		stats, err := chartStatsTx(ctx, tx, trendID, previousScan)
+	previousScan, err := latestChartScanBeforeTx(ctx, tx, scanAt)
+	if err != nil {
+		return nil, err
+	}
+
+	ids := make([]string, 0, len(trends))
+	for _, trend := range trends {
+		ids = append(ids, chartTrendID(trend))
+	}
+
+	aggregates, err := chartAggregatesTx(ctx, tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	previousRanks := map[string]int{}
+	consecutive := map[string]int{}
+	if previousScan != nil {
+		previousRanks, err = chartPreviousRanksTx(ctx, tx, ids, *previousScan)
 		if err != nil {
 			return nil, err
 		}
+		consecutive, err = chartConsecutiveScansTx(ctx, tx, ids, *previousScan)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	out := append([]model.Trend(nil), trends...)
+	for index := range out {
+		trend := &out[index]
+		trendID := chartTrendID(*trend)
+		stats := aggregates[trendID]
+		stats.PreviousRank = previousRanks[trendID]
+		stats.ConsecutiveScans = consecutive[trendID]
 
 		chart := model.ChartStats{}
 		chart.PreviousRank = stats.PreviousRank
@@ -109,29 +130,11 @@ func (s *Store) ApplyChart(ctx context.Context, trends []model.Trend, scanAt tim
 			}
 		}
 		trend.Chart = chart
-
-		_, err = tx.ExecContext(ctx, `
-INSERT INTO trend_chart_entries (
-  scan_at, trend_id, slug, rank, score, confidence_tier,
-  publisher_count, platform_count, signal_count
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(scan_at, trend_id) DO UPDATE SET
-  slug=excluded.slug,
-  rank=excluded.rank,
-  score=excluded.score,
-  confidence_tier=excluded.confidence_tier,
-  publisher_count=excluded.publisher_count,
-  platform_count=excluded.platform_count,
-  signal_count=excluded.signal_count`,
-			scanAt.Format(time.RFC3339Nano), trendID, trend.Slug, trend.Rank, trend.Score,
-			trend.ConfidenceTier, trend.Provenance.PublisherCount, trend.Provenance.PlatformCount,
-			trend.Provenance.SignalCount,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("record chart entry %s: %w", trendID, err)
-		}
 	}
 
+	if err := recordChartEntriesTx(ctx, tx, out, scanAt); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -146,58 +149,31 @@ type chartAggregate struct {
 	NumberOneScans   int
 }
 
-func chartStatsTx(ctx context.Context, tx *sql.Tx, trendID string, previousScan *time.Time) (chartAggregate, error) {
-	var stats chartAggregate
-	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MIN(rank), 0), COUNT(*), COALESCE(SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END), 0)
-FROM trend_chart_entries
-WHERE trend_id = ?`, trendID).Scan(&stats.PeakRank, &stats.TotalScans, &stats.NumberOneScans); err != nil {
-		return stats, fmt.Errorf("chart aggregate %s: %w", trendID, err)
+func chartTrendID(trend model.Trend) string {
+	if trend.ID != "" {
+		return trend.ID
 	}
-	if previousScan == nil {
-		return stats, nil
-	}
-	_ = tx.QueryRowContext(ctx, `SELECT rank FROM trend_chart_entries WHERE trend_id = ? AND scan_at = ?`,
-		trendID, previousScan.Format(time.RFC3339Nano)).Scan(&stats.PreviousRank)
-	if stats.PreviousRank == 0 {
-		return stats, nil
-	}
-
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT scan_at FROM trend_chart_entries WHERE scan_at <= ? ORDER BY scan_at DESC LIMIT 500`, previousScan.Format(time.RFC3339Nano))
-	if err != nil {
-		return stats, fmt.Errorf("chart scans: %w", err)
-	}
-	scans := make([]string, 0, 32)
-	for rows.Next() {
-		var scan string
-		if err := rows.Scan(&scan); err != nil {
-			rows.Close()
-			return stats, err
-		}
-		scans = append(scans, scan)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return stats, err
-	}
-	rows.Close()
-
-	for _, scan := range scans {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM trend_chart_entries WHERE trend_id = ? AND scan_at = ?`, trendID, scan).Scan(&exists); err != nil {
-			return stats, err
-		}
-		if exists == 0 {
-			break
-		}
-		stats.ConsecutiveScans++
-	}
-	return stats, nil
+	return trend.Slug
 }
 
-func (s *Store) latestChartScanBefore(ctx context.Context, before time.Time) (*time.Time, error) {
+func chartPlaceholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
+}
+
+func stringArgs(values []string) []any {
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
+}
+
+func latestChartScanBeforeTx(ctx context.Context, tx *sql.Tx, before time.Time) (*time.Time, error) {
 	var raw sql.NullString
-	if err := s.db.QueryRowContext(ctx, `SELECT MAX(scan_at) FROM trend_chart_entries WHERE scan_at < ?`, before.UTC().Format(time.RFC3339Nano)).Scan(&raw); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(scan_at) FROM trend_chart_entries WHERE scan_at < ?`, before.UTC().Format(time.RFC3339Nano)).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("latest chart scan: %w", err)
 	}
 	if !raw.Valid || raw.String == "" {
@@ -209,4 +185,148 @@ func (s *Store) latestChartScanBefore(ctx context.Context, before time.Time) (*t
 	}
 	parsed = parsed.UTC()
 	return &parsed, nil
+}
+
+func chartAggregatesTx(ctx context.Context, tx *sql.Tx, trendIDs []string) (map[string]chartAggregate, error) {
+	out := make(map[string]chartAggregate, len(trendIDs))
+	if len(trendIDs) == 0 {
+		return out, nil
+	}
+	query := `
+SELECT trend_id, COALESCE(MIN(rank), 0), COUNT(*),
+       COALESCE(SUM(CASE WHEN rank = 1 THEN 1 ELSE 0 END), 0)
+FROM trend_chart_entries
+WHERE trend_id IN (` + chartPlaceholders(len(trendIDs)) + `)
+GROUP BY trend_id`
+	rows, err := tx.QueryContext(ctx, query, stringArgs(trendIDs)...)
+	if err != nil {
+		return nil, fmt.Errorf("chart aggregates: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var trendID string
+		var stats chartAggregate
+		if err := rows.Scan(&trendID, &stats.PeakRank, &stats.TotalScans, &stats.NumberOneScans); err != nil {
+			return nil, fmt.Errorf("scan chart aggregate: %w", err)
+		}
+		out[trendID] = stats
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chart aggregates: %w", err)
+	}
+	return out, nil
+}
+
+func chartPreviousRanksTx(ctx context.Context, tx *sql.Tx, trendIDs []string, previousScan time.Time) (map[string]int, error) {
+	out := make(map[string]int, len(trendIDs))
+	if len(trendIDs) == 0 {
+		return out, nil
+	}
+	args := []any{previousScan.UTC().Format(time.RFC3339Nano)}
+	args = append(args, stringArgs(trendIDs)...)
+	query := `SELECT trend_id, rank FROM trend_chart_entries WHERE scan_at = ? AND trend_id IN (` + chartPlaceholders(len(trendIDs)) + `)`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chart previous ranks: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var trendID string
+		var rank int
+		if err := rows.Scan(&trendID, &rank); err != nil {
+			return nil, fmt.Errorf("scan chart previous rank: %w", err)
+		}
+		out[trendID] = rank
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chart previous ranks: %w", err)
+	}
+	return out, nil
+}
+
+func chartConsecutiveScansTx(ctx context.Context, tx *sql.Tx, trendIDs []string, previousScan time.Time) (map[string]int, error) {
+	out := make(map[string]int, len(trendIDs))
+	if len(trendIDs) == 0 {
+		return out, nil
+	}
+	args := []any{previousScan.UTC().Format(time.RFC3339Nano)}
+	args = append(args, stringArgs(trendIDs)...)
+	query := `
+WITH recent_scan_values AS (
+  SELECT DISTINCT scan_at
+  FROM trend_chart_entries
+  WHERE scan_at <= ?
+  ORDER BY scan_at DESC
+  LIMIT 500
+),
+recent_scans AS (
+  SELECT scan_at, ROW_NUMBER() OVER (ORDER BY scan_at DESC) AS seq
+  FROM recent_scan_values
+),
+occurrences AS (
+  SELECT e.trend_id,
+         rs.seq,
+         ROW_NUMBER() OVER (PARTITION BY e.trend_id ORDER BY rs.seq) AS occurrence
+  FROM recent_scans rs
+  JOIN trend_chart_entries e ON e.scan_at = rs.scan_at
+  WHERE e.trend_id IN (` + chartPlaceholders(len(trendIDs)) + `)
+)
+SELECT trend_id,
+       COALESCE(MIN(CASE WHEN seq <> occurrence THEN occurrence - 1 END), COUNT(*)) AS consecutive_scans
+FROM occurrences
+GROUP BY trend_id`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chart consecutive scans: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var trendID string
+		var count int
+		if err := rows.Scan(&trendID, &count); err != nil {
+			return nil, fmt.Errorf("scan chart consecutive count: %w", err)
+		}
+		out[trendID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chart consecutive scans: %w", err)
+	}
+	return out, nil
+}
+
+func recordChartEntriesTx(ctx context.Context, tx *sql.Tx, trends []model.Trend, scanAt time.Time) error {
+	if len(trends) == 0 {
+		return nil
+	}
+	var query strings.Builder
+	query.WriteString(`
+INSERT INTO trend_chart_entries (
+  scan_at, trend_id, slug, rank, score, confidence_tier,
+  publisher_count, platform_count, signal_count
+) VALUES `)
+	args := make([]any, 0, len(trends)*9)
+	for i, trend := range trends {
+		if i > 0 {
+			query.WriteString(",")
+		}
+		query.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		args = append(args,
+			scanAt.UTC().Format(time.RFC3339Nano), chartTrendID(trend), trend.Slug, trend.Rank, trend.Score,
+			trend.ConfidenceTier, trend.Provenance.PublisherCount, trend.Provenance.PlatformCount,
+			trend.Provenance.SignalCount,
+		)
+	}
+	query.WriteString(`
+ON CONFLICT(scan_at, trend_id) DO UPDATE SET
+  slug=excluded.slug,
+  rank=excluded.rank,
+  score=excluded.score,
+  confidence_tier=excluded.confidence_tier,
+  publisher_count=excluded.publisher_count,
+  platform_count=excluded.platform_count,
+  signal_count=excluded.signal_count`)
+	if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+		return fmt.Errorf("record chart entries: %w", err)
+	}
+	return nil
 }
