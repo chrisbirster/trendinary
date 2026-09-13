@@ -4,10 +4,13 @@ package history
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chrisbirster/trendinary/internal/model"
 )
 
 func TestTursoRuntimeUsesAtlasPreparedSchemaWithoutDDL(t *testing.T) {
@@ -25,7 +28,7 @@ func TestTursoRuntimeUsesAtlasPreparedSchemaWithoutDDL(t *testing.T) {
 	}
 
 	// The runtime connector treats schema mutation as an intercepted no-op. This
-	// keeps old defensive CREATE IF NOT EXISTS calls harmless while Atlas remains
+	// keeps old defensive CREATE IF NOT EXISTS calls harmless while Goose remains
 	// the only component that can change the actual production schema.
 	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE runtime_must_not_create (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
@@ -49,7 +52,7 @@ func TestTursoRuntimeUsesAtlasPreparedSchemaWithoutDDL(t *testing.T) {
 		t.Fatalf("runtime data write rows=%d", rows)
 	}
 
-	// Moving schema ownership to Atlas must not regress the transport behavior
+	// Moving schema ownership to Goose must not regress the transport behavior
 	// that existing Turso callers relied on: libSQL accepts one statement per
 	// request, so the inner script connector still splits ordinary DML scripts.
 	if _, err := store.DB().ExecContext(ctx, `
@@ -64,6 +67,54 @@ INSERT INTO signals(id, source_name, discovery_channel, observed_at) VALUES('atl
 	}
 	if scriptRows != 2 {
 		t.Fatalf("runtime multi-statement rows=%d, want 2", scriptRows)
+	}
+}
+
+func TestTursoBatchedSignalAndMembershipWrites(t *testing.T) {
+	url, token := tursoTestCredentials(t)
+	store, err := OpenTursoExisting(url, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := store.VerifySchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	values := make([]model.Signal, 0, 70)
+	for i := 0; i < 70; i++ {
+		values = append(values, model.Signal{
+			ID:               fmt.Sprintf("turso-batch-%03d", i),
+			Source:           model.Source{Name: "Batch Fixture", Domain: "example.com"},
+			DiscoveryChannel: "rss",
+			Title:            fmt.Sprintf("Batch signal %d", i),
+			Text:             "remote libSQL batched write fixture",
+			Engagement:       model.Engagement{Score: i},
+		})
+	}
+	if err := store.RecordSignalsBatch(ctx, values); err != nil {
+		t.Fatalf("RecordSignalsBatch: %v", err)
+	}
+	if err := store.RecordTrendSignalsBatch(ctx, "turso-batch-trend", values, time.Now().UTC()); err != nil {
+		t.Fatalf("RecordTrendSignalsBatch: %v", err)
+	}
+
+	var signalCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM signals WHERE id LIKE 'turso-batch-%'`).Scan(&signalCount); err != nil {
+		t.Fatal(err)
+	}
+	if signalCount != len(values) {
+		t.Fatalf("signals=%d, want %d", signalCount, len(values))
+	}
+	var membershipCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM trend_signal_memberships WHERE trend_key='turso-batch-trend'`).Scan(&membershipCount); err != nil {
+		t.Fatal(err)
+	}
+	if membershipCount != len(values) {
+		t.Fatalf("memberships=%d, want %d", membershipCount, len(values))
 	}
 }
 

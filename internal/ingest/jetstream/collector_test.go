@@ -9,6 +9,7 @@ import (
 	bskyjetstream "github.com/bluesky-social/jetstream"
 	"github.com/chrisbirster/trendinary/internal/history"
 	"github.com/chrisbirster/trendinary/internal/recent"
+	"github.com/chrisbirster/trendinary/internal/runtimeinfo"
 )
 
 func TestNewLoadsJetstreamAPIKeyFromEnvironment(t *testing.T) {
@@ -64,6 +65,21 @@ func TestLiveCursorTooOldDetection(t *testing.T) {
 	}
 	if liveCursorTooOld(nil) {
 		t.Fatal("nil error must not trigger live-tip recovery")
+	}
+}
+
+func TestStreamProgressedAcceptsCursorMovementWithOldEventTime(t *testing.T) {
+	old := time.Now().UTC().Add(-4 * time.Hour)
+	snapshot := runtimeinfo.StreamSnapshot{LastCursor: 101, LastEventAt: old}
+	if !streamProgressed(snapshot, 100, old) {
+		t.Fatal("cursor advancement must count as live progress while replaying old events")
+	}
+	if streamProgressed(snapshot, 101, old) {
+		t.Fatal("unchanged cursor and event time must not count as progress")
+	}
+	newer := old.Add(time.Second)
+	if !streamProgressed(runtimeinfo.StreamSnapshot{LastCursor: 101, LastEventAt: newer}, 101, old) {
+		t.Fatal("newer event observation must count as progress")
 	}
 }
 
@@ -151,11 +167,11 @@ func TestNormalizePostUsesStableATURIIdentity(t *testing.T) {
 		DID: "did:plc:test",
 		Kind: bskyjetstream.KindCommit,
 		Commit: &bskyjetstream.Commit{
-			Operation: bskyjetstream.OpCreate,
+			Operation:  bskyjetstream.OpCreate,
 			Collection: postsCollection,
-			Rkey: "xyz",
+			Rkey:       "xyz",
 			Record: map[string]any{
-				"text": "hello trendinary",
+				"text":      "hello trendinary",
 				"createdAt": "2026-08-31T12:30:00Z",
 			},
 		},
@@ -178,20 +194,20 @@ func testPostEvent(seq uint64, operation bskyjetstream.Operation, text string) b
 	record := map[string]any(nil)
 	if operation != bskyjetstream.OpDelete {
 		record = map[string]any{
-			"text": text,
+			"text":      text,
 			"createdAt": eventAt.Format(time.RFC3339Nano),
 		}
 	}
 	return bskyjetstream.Event{
-		DID: "did:plc:alice",
-		Seq: seq,
+		DID:    "did:plc:alice",
+		Seq:    seq,
 		TimeUS: eventAt.UnixMicro(),
-		Kind: bskyjetstream.KindCommit,
+		Kind:   bskyjetstream.KindCommit,
 		Commit: &bskyjetstream.Commit{
-			Operation: operation,
+			Operation:  operation,
 			Collection: postsCollection,
-			Rkey: "abc",
-			Record: record,
+			Rkey:       "abc",
+			Record:     record,
 		},
 	}
 }

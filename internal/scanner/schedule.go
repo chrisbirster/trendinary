@@ -88,7 +88,10 @@ func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledS
 	now := time.Now().UTC()
 	next := time.Time{}
 	if !meta.StartImmediately {
-		next = now.Add(initialSourceDelay(meta.ID, meta.Cadence))
+		delay := initialSourceDelay(meta.ID, meta.Cadence)
+		if delay > 0 {
+			next = now.Add(delay)
+		}
 	}
 	return &ScheduledSource{source: source, meta: meta, now: func() time.Time { return time.Now().UTC() }, next: next}
 }
@@ -182,6 +185,9 @@ func sourceHash(id string) uint32 {
 }
 
 func initialSourceDelay(id string, cadence time.Duration) time.Duration {
+	if bootstrapDiscoverySource(id) {
+		return 0
+	}
 	if cadence <= 0 {
 		return 0
 	}

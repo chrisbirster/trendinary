@@ -129,7 +129,7 @@ func strongestClusters(values []engine.Cluster, limit int) []engine.Cluster {
 
 func top20CandidateWeight(cluster engine.Cluster) int {
 	values := independentEvidenceSignals(cluster.Signals)
-	provenance := provenanceSummary(values)
+	provenance := scoringProvenance(provenanceSummary(values))
 	engagement := 0
 	for _, signal := range values {
 		engagement += signal.Engagement.Score + signal.Engagement.Likes + 2*signal.Engagement.Reposts + signal.Engagement.Replies + 2*signal.Engagement.Quotes
