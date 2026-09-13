@@ -63,7 +63,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 			candidates = append(candidates, cluster)
 		}
 	}
-	seedClusters := strongestClusters(candidates, maxCandidateClusters)
+	seedClusters := strongestClusters(candidates, topCandidateProcessingLimit(s.config.PublishedTrendLimit))
 	if len(seedClusters) == 0 {
 		return Result{Signals: len(discovery), Warnings: append(warnings, "no clusters met the Top 20 chart candidate gate")}, nil
 	}

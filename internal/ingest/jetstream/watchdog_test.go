@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -33,5 +34,15 @@ func TestShouldDropResumeGapOnlyForStalePublicResume(t *testing.T) {
 	}
 	if shouldDropResumeGap("live", "", stale, now) {
 		t.Fatal("already-live subscriptions do not have a resume gap to drop")
+	}
+}
+
+func TestRecycleStalledSubscriptionCancelsEventIteratorContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	recycleStalledSubscription(cancel, nil)
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("stalled subscription must cancel its Events context")
 	}
 }
