@@ -1,0 +1,36 @@
+name: v0.6.0 live audit
+
+on:
+  push:
+    branches: [ops/v0.6.0-deploy]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runtime health
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --retry 5 --retry-all-errors --retry-delay 3 \
+            https://trendinary.com/api/v1/health/streams | tee health.json | jq .
+
+      - name: Current chart
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --retry 5 --retry-all-errors --retry-delay 3 \
+            https://trendinary.com/api/v1/trends | tee trends.json | jq .
+          echo '--- chart summary ---'
+          jq -r '.data[] | [(.rank|tostring), .slug, (.score|tostring), .confidence_tier, (.chart.movement // ""), (.provenance.publisher_count|tostring), (.provenance.platform_count|tostring), (.provenance.signal_count|tostring), ([.sources[]?.domain] | unique | join(","))] | @tsv' trends.json
+          echo '--- count ---'
+          jq '.data | length' trends.json
+
+      - name: Source contribution summary
+        run: |
+          set -euo pipefail
+          echo '--- domains represented in chart ---'
+          jq -r '[.data[].sources[]?.domain] | group_by(.) | map({domain: .[0], count: length}) | sort_by(-.count)[] | "\(.count)\t\(.domain)"' trends.json
+          echo '--- publisher/platform totals by rank ---'
+          jq -r '.data[] | "#\(.rank)\t\(.slug)\tpublishers=\(.provenance.publisher_count)\tplatforms=\(.provenance.platform_count)\tsignals=\(.provenance.signal_count)"' trends.json
