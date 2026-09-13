@@ -27,13 +27,13 @@ func (s *Scanner) scoreClusterV3(ctx context.Context, current, evidence engine.C
 
 	raw := rawMetrics(engine.Cluster{Key: current.Key, Signals: currentIndependent})
 	evidenceRaw := rawMetrics(engine.Cluster{Key: evidence.Key, Signals: evidenceIndependent})
-	currentProvenance := provenanceSummary(currentIndependent)
-	scoringProvenance := provenanceSummary(evidenceIndependent)
+	currentProvenance := scoringProvenance(provenanceSummary(currentIndependent))
+	scoringEvidenceProvenance := scoringProvenance(provenanceSummary(evidenceIndependent))
 	displayProvenance := provenanceSummary(evidence.Signals)
 	raw.SourceCount = currentProvenance.PublisherCount
 	raw.CommunityCount = currentProvenance.PlatformCount
-	evidenceRaw.SourceCount = scoringProvenance.PublisherCount
-	evidenceRaw.CommunityCount = scoringProvenance.PlatformCount
+	evidenceRaw.SourceCount = scoringEvidenceProvenance.PublisherCount
+	evidenceRaw.CommunityCount = scoringEvidenceProvenance.PlatformCount
 
 	baseline, err := s.history.Baseline(ctx, current.Key, now.Add(-s.config.BaselineWindow))
 	if err != nil {
@@ -45,8 +45,8 @@ func (s *Scanner) scoreClusterV3(ctx context.Context, current, evidence engine.C
 	}
 	attention := saturating(raw.RawAttention, scale)
 	velocity := velocityScore(raw.RawAttention, baseline.AverageAttention, baseline.Observations)
-	publisherBreadth := clamp01(float64(scoringProvenance.PublisherCount) / float64(s.config.SourceUniverse))
-	platformBreadth := clamp01(float64(scoringProvenance.PlatformCount) / 5.0)
+	publisherBreadth := clamp01(float64(scoringEvidenceProvenance.PublisherCount) / float64(s.config.SourceUniverse))
+	platformBreadth := clamp01(float64(scoringEvidenceProvenance.PlatformCount) / 5.0)
 	novelty := noveltyScore(baseline, now)
 	confidence := clamp01(.10 + math.Min(float64(raw.SignalCount)/8, 1)*.35 + publisherBreadth*.35 + platformBreadth*.20)
 	score := engine.Score(engine.ScoreInput{
@@ -71,10 +71,10 @@ func (s *Scanner) scoreClusterV3(ctx context.Context, current, evidence engine.C
 		Reason: rollingReasonLabel(raw, evidenceRaw, baseline, velocity), Sources: uniqueSources(evidence.Signals), Timeline: timeline(evidence, now),
 		Quality: qualityBreakdown(score), Provenance: displayProvenance,
 	}
-	trend.ConfidenceTier = confidenceTier(scoringProvenance, confidence)
+	trend.ConfidenceTier = confidenceTier(scoringEvidenceProvenance, confidence)
 	snapshotRaw := raw
-	snapshotRaw.SourceCount = scoringProvenance.PublisherCount
-	snapshotRaw.CommunityCount = scoringProvenance.PlatformCount
+	snapshotRaw.SourceCount = scoringEvidenceProvenance.PublisherCount
+	snapshotRaw.CommunityCount = scoringEvidenceProvenance.PlatformCount
 	snapshot := history.Snapshot{TrendKey: current.Key, ObservedAt: now, Lifecycle: lifecycle, Score: score, Raw: snapshotRaw}
 	return trend, snapshot, nil
 }
