@@ -42,6 +42,7 @@ type SourceMetadata struct {
 	URL              string
 	TermsURL         string
 	Cadence          time.Duration
+	DiscoveryTimeout time.Duration
 	StartImmediately bool
 }
 
@@ -97,6 +98,13 @@ func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledS
 }
 
 func (s *ScheduledSource) Name() string { return s.meta.Name }
+
+func (s *ScheduledSource) DiscoveryTimeout() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.meta.DiscoveryTimeout
+}
 
 func (s *ScheduledSource) Discover(ctx context.Context) ([]model.Signal, error) {
 	if s == nil || s.source == nil {
