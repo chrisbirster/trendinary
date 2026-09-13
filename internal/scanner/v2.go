@@ -40,20 +40,9 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		}
 		discovery = append(discovery, stream...)
 	}
-	for _, source := range extra {
-		if source == nil {
-			continue
-		}
-		values, err := source.Discover(ctx)
-		// Cadenced sources can return their last good cached batch together with a
-		// refresh error. Preserve that evidence while surfacing the warning.
-		if len(values) > 0 {
-			discovery = append(discovery, values...)
-		}
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s discovery: %v", source.Name(), err))
-		}
-	}
+	extraSignals, extraWarnings := discoverExtraSources(ctx, extra)
+	discovery = append(discovery, extraSignals...)
+	warnings = append(warnings, extraWarnings...)
 	discovery = deduplicateSignals(discovery)
 	filtered := filterDiscoveryNoise(discovery)
 	discovery = filtered.Signals
@@ -115,7 +104,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		allSignals = append(allSignals, enriched[i].Signals...)
 	}
 	allSignals = deduplicateSignals(allSignals)
-	if err := s.history.RecordSignals(ctx, allSignals); err != nil {
+	if err := s.history.RecordSignalsBatch(ctx, allSignals); err != nil {
 		return Result{}, fmt.Errorf("persist signals: %w", err)
 	}
 
@@ -131,7 +120,7 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 			warnings = append(warnings, fmt.Sprintf("identity %s: %v", cluster.Key, err))
 			continue
 		}
-		if err := s.history.RecordTrendSignals(ctx, entity.ID, cluster.Signals, now); err != nil {
+		if err := s.history.RecordTrendSignalsBatch(ctx, entity.ID, cluster.Signals, now); err != nil {
 			warnings = append(warnings, fmt.Sprintf("quality membership %s: %v", entity.ID, err))
 		}
 
@@ -177,11 +166,14 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 	for i := range trends {
 		trends[i].Rank = i + 1
 	}
-	if charted, err := s.history.ApplyChart(ctx, trends, now); err != nil {
-		warnings = append(warnings, fmt.Sprintf("persist chart: %v", err))
-	} else {
-		trends = charted
+	charted, err := s.history.ApplyChart(ctx, trends, now)
+	if err != nil {
+		// Chart metadata is part of the public Top 20 contract. Never report a
+		// successful scan or publish unannotated trends when durable chart state
+		// could not be written.
+		return Result{}, fmt.Errorf("persist chart: %w", err)
 	}
+	trends = charted
 	s.memory.ReplaceTrends(trends)
 	return Result{Signals: len(allSignals), Clusters: len(enriched), Trends: len(trends), Warnings: warnings}, nil
 }
