@@ -5,6 +5,20 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 ## [Unreleased]
 
 
+## [0.6.3] - 2026-09-12
+
+### Changed
+
+- Production scanner durable scoring now evaluates the strongest two times the publish-capacity candidate shortlist (40 candidates for the Top 20) instead of paying remote Turso entity, history, baseline, propagation, snapshot, and membership costs for up to 100 clusters.
+- The full discovered cluster universe is still pre-ranked before the durable-work shortlist, preserving ranking competition while keeping a production scan comfortably inside its cadence.
+
+### Fixed
+
+- Stalled Bluesky Jetstream subscriptions now use a per-subscription cancellable context, allowing the watchdog to interrupt a blocked Events iterator instead of relying on transport Close alone.
+- Credential-free stale public cursor recovery can now actually exit the stalled iterator and attach at the current live tip while preserving parent collector shutdown semantics.
+- Added regression coverage for the Top 20 durable-work budget and watchdog-driven subscription cancellation.
+
+
 ## [0.6.2] - 2026-09-12
 
 ### Added
