@@ -14,7 +14,10 @@ import (
 	"github.com/chrisbirster/trendinary/internal/model"
 )
 
-const defaultEndpoint = "https://api.github.com/search/repositories"
+const (
+	defaultEndpoint    = "https://api.github.com/search/repositories"
+	minimumTrendStars  = 20
+)
 
 var githubSource = model.Source{Name: "GitHub", Domain: "github.com", URL: "https://github.com/"}
 
@@ -68,9 +71,11 @@ func NewWithEndpoint(client *http.Client, endpoint, token string, limit int) *Di
 
 func (d *Discovery) Name() string { return "GitHub" }
 
-// Discover finds newly-created repositories attracting unusual early stars.
+// Discover finds newly-created repositories attracting meaningful early stars.
 // The five-minute cache keeps unauthenticated installations comfortably below
-// GitHub's public rate limit; a token is strongly preferred in production.
+// GitHub's public rate limit; a token is strongly preferred in production. A
+// twenty-star floor keeps trivial repository bursts from dominating a global
+// attention chart before any independent source corroborates them.
 func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -83,7 +88,7 @@ func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 		return nil, err
 	}
 	params := endpoint.Query()
-	params.Set("q", "created:>="+time.Now().UTC().Add(-48*time.Hour).Format("2006-01-02")+" stars:>=5")
+	params.Set("q", "created:>="+time.Now().UTC().Add(-48*time.Hour).Format("2006-01-02")+" stars:>="+strconv.Itoa(minimumTrendStars))
 	params.Set("sort", "stars")
 	params.Set("order", "desc")
 	params.Set("per_page", strconv.Itoa(d.limit))
@@ -94,7 +99,7 @@ func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "trendinary/0.3.1 (+https://trendinary.com)")
+	req.Header.Set("User-Agent", "trendinary/0.6.1 (+https://trendinary.com)")
 	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
 	}
@@ -113,7 +118,7 @@ func (d *Discovery) Discover(ctx context.Context) ([]model.Signal, error) {
 
 	values := make([]model.Signal, 0, len(payload.Items))
 	for _, repo := range payload.Items {
-		if repo.ID == 0 || repo.FullName == "" {
+		if repo.ID == 0 || repo.FullName == "" || repo.StargazersCount < minimumTrendStars {
 			continue
 		}
 		values = append(values, model.Signal{
