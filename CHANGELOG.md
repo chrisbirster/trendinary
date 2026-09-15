@@ -5,6 +5,23 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 ## [Unreleased]
 
 
+## [0.6.4] - 2026-09-13
+
+### Changed
+
+- Bluesky Jetstream is now a bounded in-memory discovery stream instead of a raw Turso event archive; only scanner-selected trend evidence is persisted.
+- Jetstream durable cursor checkpoints are rate-limited to a five-second cadence while preserving a forced final checkpoint on reconnect/shutdown boundaries.
+- Production durable scoring is bounded to publish capacity, so a Top 20 scan performs remote candidate work for at most 20 shortlisted clusters.
+- Identical signal UPSERTs are true no-ops, and existing trend memberships refresh at most hourly instead of every scan.
+
+### Fixed
+
+- Added `idx_trend_signal_memberships_signal_id` so signal deletes and foreign-key cascades no longer scan memberships by the wrong key order.
+- Credential-free public Jetstream resumes now abandon stale history after the freshness grace period even when the cursor continues advancing; authenticated archive replay remains allowed to catch up the full gap.
+- Scanner persistence now happens after final Top 20 selection, eliminating durable writes for candidates that cannot be published.
+- Added regression coverage proving raw Jetstream posts are not persisted and repeated unchanged evidence does not consume Turso writes.
+
+
 ## [0.6.3] - 2026-09-12
 
 ### Changed
