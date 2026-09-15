@@ -57,7 +57,10 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		return Result{}, fmt.Errorf("no discovery signals available")
 	}
 
-	clustered := engine.ClusterSignalsV2(discovery, s.config.ClusterThreshold)
+	clustered, err := engine.ClusterSignalsV2Context(ctx, discovery, s.config.ClusterThreshold)
+	if err != nil {
+		return Result{}, fmt.Errorf("cluster discovery signals: %w", err)
+	}
 	candidates := make([]engine.Cluster, 0, len(clustered))
 	for _, cluster := range clustered {
 		if chartCandidateCluster(cluster) {
