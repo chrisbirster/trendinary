@@ -1,14 +1,19 @@
 package scanner
 
-// topCandidateProcessingLimit bounds remote durable scoring work to the number
-// of trends we can actually publish. The full discovered cluster universe still
-// competes in the cheap pre-score ranking before this shortlist is chosen.
+const candidateReplacementReserve = 5
+
+// topCandidateProcessingLimit keeps a small bounded reserve beyond the public
+// chart size so an identity/score/snapshot failure cannot turn a healthy Top 20
+// candidate pool into an 18- or 19-item chart. This remains intentionally tiny:
+// discovery and clustering are cheap/in-memory, while durable scoring work stays
+// bounded to publish capacity plus a handful of replacements.
 func topCandidateProcessingLimit(published int) int {
 	if published <= 0 {
 		published = 20
 	}
-	if published > maxCandidateClusters {
+	limit := published + candidateReplacementReserve
+	if limit > maxCandidateClusters {
 		return maxCandidateClusters
 	}
-	return published
+	return limit
 }

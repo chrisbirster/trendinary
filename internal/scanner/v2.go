@@ -57,7 +57,10 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		return Result{}, fmt.Errorf("no discovery signals available")
 	}
 
-	clustered := engine.ClusterSignalsV2(discovery, s.config.ClusterThreshold)
+	clustered, err := engine.ClusterSignalsV2Context(ctx, discovery, s.config.ClusterThreshold)
+	if err != nil {
+		return Result{}, fmt.Errorf("cluster discovery signals: %w", err)
+	}
 	candidates := make([]engine.Cluster, 0, len(clustered))
 	for _, cluster := range clustered {
 		if chartCandidateCluster(cluster) {
@@ -158,10 +161,11 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		}
 		return scored[i].trend.Score > scored[j].trend.Score
 	})
-	if len(scored) > s.config.PublishedTrendLimit {
-		scored = scored[:s.config.PublishedTrendLimit]
-	}
 
+	// Persist the bounded scored shortlist, including its small reserve. Keeping
+	// the reserve here lets finalization backfill around an occasional membership,
+	// decoration, or snapshot failure without going back to a broad write-heavy
+	// candidate pass.
 	selectedSignals := make([]model.Signal, 0)
 	for _, candidate := range scored {
 		selectedSignals = append(selectedSignals, candidate.current.Signals...)
@@ -171,8 +175,11 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 		return Result{}, fmt.Errorf("persist selected signals: %w", err)
 	}
 
-	trends := make([]model.Trend, 0, len(scored))
+	trends := make([]model.Trend, 0, min(len(scored), s.config.PublishedTrendLimit))
 	for _, candidate := range scored {
+		if len(trends) >= s.config.PublishedTrendLimit {
+			break
+		}
 		if err := s.history.RecordTrendSignalsBatch(ctx, candidate.entity.ID, candidate.current.Signals, now); err != nil {
 			warnings = append(warnings, fmt.Sprintf("quality membership %s: %v", candidate.entity.ID, err))
 		}
@@ -185,6 +192,9 @@ func (s *Scanner) RunWithSourcesV2(ctx context.Context, live *recent.Store, extr
 			continue
 		}
 		trends = append(trends, trend)
+	}
+	if len(scored) >= s.config.PublishedTrendLimit && len(trends) < s.config.PublishedTrendLimit {
+		warnings = append(warnings, fmt.Sprintf("chart finalized with %d/%d trends after candidate finalization failures", len(trends), s.config.PublishedTrendLimit))
 	}
 
 	sort.SliceStable(trends, func(i, j int) bool {

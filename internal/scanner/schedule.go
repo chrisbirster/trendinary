@@ -42,6 +42,7 @@ type SourceMetadata struct {
 	URL              string
 	TermsURL         string
 	Cadence          time.Duration
+	DiscoveryTimeout time.Duration
 	StartImmediately bool
 }
 
@@ -87,7 +88,7 @@ func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledS
 	}
 	now := time.Now().UTC()
 	next := time.Time{}
-	if !meta.StartImmediately {
+	if !meta.StartImmediately && !startupWarmSource(meta) {
 		delay := initialSourceDelay(meta.ID, meta.Cadence)
 		if delay > 0 {
 			next = now.Add(delay)
@@ -97,6 +98,37 @@ func NewScheduledSource(source DiscoverySource, meta SourceMetadata) *ScheduledS
 }
 
 func (s *ScheduledSource) Name() string { return s.meta.Name }
+
+func (s *ScheduledSource) DiscoveryTimeout() time.Duration {
+	if s == nil {
+		return 0
+	}
+	if s.meta.DiscoveryTimeout > 0 {
+		return s.meta.DiscoveryTimeout
+	}
+	switch s.meta.ID {
+	case "gdelt":
+		return 16 * time.Second
+	case "newsdata-api":
+		return 13 * time.Second
+	case "youtube-api":
+		return 11 * time.Second
+	default:
+		return 0
+	}
+}
+
+func startupWarmSource(meta SourceMetadata) bool {
+	if bootstrapDiscoverySource(meta.ID) || meta.Kind == "rss" {
+		return true
+	}
+	switch meta.ID {
+	case "gdelt", "newsdata-api", "youtube-api":
+		return true
+	default:
+		return false
+	}
+}
 
 func (s *ScheduledSource) Discover(ctx context.Context) ([]model.Signal, error) {
 	if s == nil || s.source == nil {
