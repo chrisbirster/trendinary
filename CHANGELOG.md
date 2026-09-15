@@ -5,6 +5,25 @@ All notable Trendinary changes are tracked here. Releases use Semantic Versionin
 ## [Unreleased]
 
 
+## [0.6.5] - 2026-09-14
+
+### Changed
+
+- Discovery startup now warms configured RSS, GDELT, YouTube, and NewsData sources immediately while preserving normal steady-state cadence and jitter after the first scan.
+- Source discovery now uses per-source timeout budgets, including longer windows for GDELT, NewsData, and YouTube instead of forcing every source through the same eight-second deadline.
+- Semantic clustering now precomputes token/entity sets and avoids per-pair allocation churn while remaining context-cancellable, cutting the validated 500-signal staging scan from deadline exhaustion to roughly four seconds.
+- The Top 20 shortlist now log-compresses raw engagement and limits any single non-web platform to about 20 percent of the shortlist when other candidates are available, with a bounded reserve for backfill.
+- Managed production runtime startup is now read-only with respect to schema/seed provisioning; durable TechURLs seed data moved into Goose migration `00005_runtime_seed_data.sql`, and Web Push no longer persists a generated VAPID key during managed startup.
+
+### Fixed
+
+- Scanner discovery no longer hangs waiting for a source that ignores context cancellation; the parent scan deadline can terminate discovery cleanly.
+- YouTube view counts can no longer overwhelm the pre-score shortlist and crowd out corroborated RSS, Hacker News, GitHub, and news signals.
+- Top 20 finalization now keeps a five-candidate reserve available until persistence/snapshot work completes, allowing failed candidates to be backfilled instead of producing 18 or 19 chart entries.
+- Production startup no longer performs the editorial source UPSERT or conditional Web Push key INSERT that caused Turso write-block crash loops even when scanner and Jetstream producers were disabled.
+- Added regression coverage for cancellable clustering, source deadline handling, shortlist diversity, Top 20 backfill, and managed-database startup write safety.
+
+
 ## [0.6.4] - 2026-09-13
 
 ### Changed
