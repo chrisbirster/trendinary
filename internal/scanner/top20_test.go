@@ -93,6 +93,52 @@ func TestGoogleTrendsHasDistinctPlatformProvenance(t *testing.T) {
 	}
 }
 
+func TestStrongestClustersLimitsSinglePlatformFloodWhenAlternativesExist(t *testing.T) {
+	clusters := make([]engine.Cluster, 0, 16)
+	for i := 0; i < 8; i++ {
+		clusters = append(clusters, engine.Cluster{Key: fmt.Sprintf("youtube-%02d", i), Signals: []model.Signal{{
+			ID: fmt.Sprintf("youtube:%02d", i), Source: model.Source{Name: fmt.Sprintf("Channel %02d", i), Domain: "youtube.com"},
+			DiscoveryChannel: "youtube", Author: fmt.Sprintf("Channel %02d", i), Title: fmt.Sprintf("YouTube topic %02d", i),
+			Engagement: model.Engagement{Score: 100_000_000 - i},
+		}}})
+	}
+	for i := 0; i < 8; i++ {
+		clusters = append(clusters, engine.Cluster{Key: fmt.Sprintf("web-%02d", i), Signals: []model.Signal{{
+			ID: fmt.Sprintf("rss:%02d", i), Source: model.Source{Name: fmt.Sprintf("Publisher %02d", i), Domain: fmt.Sprintf("publisher-%02d.example", i)},
+			DiscoveryChannel: "rss", Title: fmt.Sprintf("Web topic %02d", i),
+		}}})
+	}
+
+	got := strongestClusters(clusters, 8)
+	if len(got) != 8 {
+		t.Fatalf("shortlist length = %d, want 8", len(got))
+	}
+	youtube := 0
+	for _, cluster := range got {
+		if singlePlatformCandidateBucket(cluster) == "youtube" {
+			youtube++
+		}
+	}
+	if youtube != 2 {
+		t.Fatalf("YouTube shortlist entries = %d, want 2 when alternatives exist", youtube)
+	}
+}
+
+func TestStrongestClustersBackfillsSinglePlatformWhenChartWouldOtherwiseBeSparse(t *testing.T) {
+	clusters := make([]engine.Cluster, 0, 8)
+	for i := 0; i < 8; i++ {
+		clusters = append(clusters, engine.Cluster{Key: fmt.Sprintf("youtube-%02d", i), Signals: []model.Signal{{
+			ID: fmt.Sprintf("youtube:%02d", i), Source: model.Source{Name: fmt.Sprintf("Channel %02d", i), Domain: "youtube.com"},
+			DiscoveryChannel: "youtube", Author: fmt.Sprintf("Channel %02d", i), Title: fmt.Sprintf("YouTube topic %02d", i),
+			Engagement: model.Engagement{Score: 1000 + i},
+		}}})
+	}
+	got := strongestClusters(clusters, 8)
+	if len(got) != 8 {
+		t.Fatalf("shortlist length = %d, want 8 after single-platform backfill", len(got))
+	}
+}
+
 func TestScannerPublishesRanksOneThroughTwenty(t *testing.T) {
 	historical, err := history.Open(":memory:")
 	if err != nil {
