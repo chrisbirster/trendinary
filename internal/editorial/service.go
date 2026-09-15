@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chrisbirster/trendinary/internal/history"
 )
 
 type Service struct {
@@ -22,7 +24,13 @@ func NewService(store *Store, client *http.Client, sources ...DiscoverySource) (
 	service := &Service{store:store,sources:map[string]DiscoverySource{},client:client,now:func()time.Time{return time.Now().UTC()}}
 	for _, source := range sources { if source != nil { service.sources[source.Name()] = source } }
 	if _, ok := service.sources["techurls"]; !ok { service.sources["techurls"] = NewTechURLs(client) }
-	if err := store.EnsureSource(context.Background(), Source{ID:"techurls",Name:"TechURLs",Kind:"aggregator",URL:techURLsEndpoint,Enabled:true}); err != nil { return nil,err }
+	// Production/runtime databases are externally managed by Goose. Normal app
+	// startup must therefore be read-only: the migration lane seeds durable
+	// source metadata, while legacy/test stores retain the old convenience
+	// behavior of creating that row on construction.
+	if !history.IsExternallyManagedDB(store.db) {
+		if err := store.EnsureSource(context.Background(), Source{ID:"techurls",Name:"TechURLs",Kind:"aggregator",URL:techURLsEndpoint,Enabled:true}); err != nil { return nil,err }
+	}
 	return service,nil
 }
 

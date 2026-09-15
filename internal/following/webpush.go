@@ -30,6 +30,7 @@ const vapidPrivateKeyKV = "webpush-vapid-p256-private-v1"
 const vapidSubject = "mailto:alerts@trendinary.com"
 
 var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+var errVAPIDKeyNotInitialized = errors.New("Web Push VAPID key is not initialized; provision it outside normal runtime startup")
 
 type PushSender struct {
 	store      *Store
@@ -131,6 +132,9 @@ func ensureVAPIDPrivateKey(ctx context.Context, store *Store) ([]byte, error) {
 			return nil, errors.New("stored VAPID private key is invalid")
 		}
 		return privateKey, nil
+	}
+	if store.externallyManagedRuntime() {
+		return nil, errVAPIDKeyNotInitialized
 	}
 
 	generated, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
