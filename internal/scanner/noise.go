@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"math"
 	"sort"
 	"strings"
 
@@ -112,6 +113,12 @@ func chartCandidateCluster(cluster engine.Cluster) bool {
 	return qualifying > 0 && hasFreshSignal
 }
 
+// strongestClusters chooses the cheap pre-score shortlist while preventing one
+// closed/algorithmic platform from crowding every other discovery surface out
+// of the durable scoring budget. The cap is soft: when there are not enough
+// alternatives, overflow candidates are backfilled so a single-platform event
+// can still fill an otherwise sparse chart. Open-web candidates are not capped
+// because Web already represents many independent publishers.
 func strongestClusters(values []engine.Cluster, limit int) []engine.Cluster {
 	out := append([]engine.Cluster(nil), values...)
 	sort.SliceStable(out, func(i, j int) bool {
@@ -121,10 +128,51 @@ func strongestClusters(values []engine.Cluster, limit int) []engine.Cluster {
 		}
 		return left > right
 	})
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	if limit <= 0 || len(out) <= limit {
+		return out
 	}
-	return out
+
+	perPlatformLimit := (limit + 3) / 4 // at most ~25% of the shortlist when alternatives exist
+	if perPlatformLimit < 1 {
+		perPlatformLimit = 1
+	}
+	selected := make([]engine.Cluster, 0, limit)
+	overflow := make([]engine.Cluster, 0)
+	platformCounts := map[string]int{}
+	for _, cluster := range out {
+		bucket := singlePlatformCandidateBucket(cluster)
+		if bucket != "" && platformCounts[bucket] >= perPlatformLimit {
+			overflow = append(overflow, cluster)
+			continue
+		}
+		selected = append(selected, cluster)
+		if bucket != "" {
+			platformCounts[bucket]++
+		}
+		if len(selected) == limit {
+			return selected
+		}
+	}
+	for _, cluster := range overflow {
+		selected = append(selected, cluster)
+		if len(selected) == limit {
+			break
+		}
+	}
+	return selected
+}
+
+func singlePlatformCandidateBucket(cluster engine.Cluster) string {
+	values := independentEvidenceSignals(cluster.Signals)
+	provenance := provenanceSummary(values)
+	if provenance.PlatformCount != 1 || len(provenance.Platforms) != 1 {
+		return ""
+	}
+	platform := strings.ToLower(strings.TrimSpace(provenance.Platforms[0]))
+	if platform == "" || platform == "web" {
+		return ""
+	}
+	return platform
 }
 
 func top20CandidateWeight(cluster engine.Cluster) int {
@@ -132,7 +180,8 @@ func top20CandidateWeight(cluster engine.Cluster) int {
 	provenance := scoringProvenance(provenanceSummary(values))
 	engagement := 0
 	for _, signal := range values {
-		engagement += signal.Engagement.Score + signal.Engagement.Likes + 2*signal.Engagement.Reposts + signal.Engagement.Replies + 2*signal.Engagement.Quotes
+		weighted := signal.Engagement.Score + signal.Engagement.Likes + 2*signal.Engagement.Reposts + signal.Engagement.Replies + 2*signal.Engagement.Quotes
+		engagement += int(math.Round(math.Log1p(float64(max(weighted, 0))) * 12))
 	}
 	return engagement + len(values)*10 + provenance.PublisherCount*45 + provenance.PlatformCount*65
 }
