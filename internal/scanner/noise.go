@@ -132,7 +132,7 @@ func strongestClusters(values []engine.Cluster, limit int) []engine.Cluster {
 		return out
 	}
 
-	perPlatformLimit := (limit + 3) / 4 // at most ~25% of the shortlist when alternatives exist
+	perPlatformLimit := (limit + 4) / 5 // at most ~20% of the shortlist when alternatives exist
 	if perPlatformLimit < 1 {
 		perPlatformLimit = 1
 	}
